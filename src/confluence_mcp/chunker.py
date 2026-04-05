@@ -23,6 +23,10 @@ Rules:
 5. Allow ~15% overlap between adjacent chunks to maintain context
 6. Minimum chunk size: 100 tokens - merge smaller fragments into their parent chunk
 7. Preserve frontmatter (---) in the first chunk only
+8. DO NOT create chunks that are empty, contain only whitespace, or have no meaningful text content
+9. DO NOT create chunks that only contain markdown syntax (e.g. just "---", "...", "___", or just table borders)
+10. If a section has no meaningful content, skip it entirely - do not output an empty chunk
+11. CRITICAL: Only create a chunk if it contains information that could answer a real question. If a chunk is just headings, navigation, metadata, or structural placeholders with no substantive content, skip it. Each chunk must contain actual facts, explanations, descriptions, procedures, or data that someone might ask about.
 
 Output ONLY a valid JSON array. No explanation, no markdown code fences.
 
@@ -93,12 +97,75 @@ Markdown content:
         chunks = []
         for item in items:
             if isinstance(item, dict) and "content" in item:
+                content = item["content"].strip()
+                if not self._is_valid_chunk(content):
+                    continue
                 chunks.append({
-                    "content": item["content"],
+                    "content": content,
                     "heading_path": item.get("heading_path", item.get("heading", "")),
                 })
 
         return chunks if chunks else [{"content": content, "heading_path": ""}]
+
+    @staticmethod
+    def _is_valid_chunk(content: str) -> bool:
+        """Check if a chunk has meaningful, answerable content.
+
+        A valid chunk must contain information that could answer a real question.
+        Structural content, navigation, metadata, and placeholders are rejected.
+        """
+        if not content:
+            return False
+
+        text = content.strip()
+        if len(text) < 40:
+            return False
+
+        lines = text.splitlines()
+        heading_only = all(
+            line.strip().startswith("#") or line.strip() == "" or line.strip().startswith("---")
+            for line in lines
+        )
+        if heading_only:
+            return False
+
+        text_no_markup = text
+        for ch in ["#", "-", "*", "|", "`", ">", "_", "~"]:
+            text_no_markup = text_no_markup.replace(ch, "")
+        text_no_markup = text_no_markup.strip()
+
+        if len(text_no_markup) < 20:
+            return False
+
+        words = text_no_markup.split()
+        real_words = [w for w in words if w.isalpha() and len(w) > 2]
+
+        if len(real_words) < 5:
+            code_lines = [l.strip() for l in lines if l.strip() and not l.strip().startswith("#")]
+            if len(code_lines) >= 3:
+                return True
+            return False
+
+        meaningless_phrases = [
+            "table of contents",
+            "on this page",
+            "navigation",
+            "breadcrumbs",
+            "last updated",
+            "created by",
+            "modified by",
+            "updated by",
+            "no content",
+            "not applicable",
+        ]
+        lower = text_no_markup.lower()
+        has_meaningless = any(phrase in lower for phrase in meaningless_phrases)
+        if has_meaningless:
+            substantive_words = len([w for w in words if w.isalpha() and len(w) > 3])
+            if substantive_words < 5:
+                return False
+
+        return True
 
     def chunk_page(
         self,
@@ -135,9 +202,11 @@ Markdown content:
         if attachments:
             for att in attachments:
                 att_content = att.get("content", "")
-                if att_content and len(att_content) > 100:
+                if att_content and len(att_content.strip()) > 100:
                     att_chunks = self.chunk_content(att_content)
                     for j, att_chunk in enumerate(att_chunks):
+                        if not self._is_valid_chunk(att_chunk["content"]):
+                            continue
                         chunks.append({
                             "chunk_id": f"{page_id}-att-{att.get('filename', 'unknown')}-{j}",
                             "page_id": page_id,
