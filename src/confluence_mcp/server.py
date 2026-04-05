@@ -12,6 +12,7 @@ from confluence_mcp.converter import (
     convert_page_to_markdown,
     generate_page_path,
 )
+from confluence_mcp.embedder import EmbeddingClient
 from confluence_mcp.extractor import FileExtractor
 
 load_dotenv()
@@ -392,6 +393,194 @@ async def chunk_space_for_rag(
 
     finally:
         await client.close()
+
+
+def _get_embedder() -> EmbeddingClient:
+    """Create an embedding client from environment variables."""
+    base_url = os.getenv("EMBEDDING_BASE_URL", "http://localhost:8080")
+    endpoint = os.getenv("EMBEDDING_ENDPOINT", "/embed")
+    api_key = os.getenv("EMBEDDING_API_KEY", "")
+    timeout = float(os.getenv("EMBEDDING_TIMEOUT", "120"))
+    batch_size = int(os.getenv("EMBEDDING_BATCH_SIZE", "32"))
+
+    return EmbeddingClient(
+        base_url=base_url,
+        endpoint=endpoint,
+        api_key=api_key,
+        timeout=timeout,
+    ), batch_size
+
+
+@mcp.tool()
+async def embed_chunks(
+    chunks: list[dict[str, Any]],
+    batch_size: int = 32,
+) -> list[dict[str, Any]]:
+    """Embed a list of chunks using an external embedding API.
+
+    Takes chunked content (from chunk_space_for_rag or manual input)
+    and adds embedding vectors to each chunk by calling an external API.
+
+    Supports batch processing for efficiency. Configure the embedding
+    API endpoint via environment variables.
+
+    Args:
+        chunks: List of chunk objects, each must have a "content" field.
+            Can be output from chunk_space_for_rag or manually structured.
+        batch_size: Number of chunks to embed per API call (default 32).
+            Adjust based on your API's rate limits and payload size.
+
+    Returns:
+        List of chunk objects with added "embedding" field:
+        - chunk_id: Original chunk ID
+        - content: Original chunk content
+        - embedding: Vector of floats from embedding API
+        - All original fields preserved
+
+    Example input:
+    [
+      {"chunk_id": "123-0", "content": "Some text..."},
+      {"chunk_id": "123-1", "content": "More text..."}
+    ]
+
+    Example output:
+    [
+      {"chunk_id": "123-0", "content": "Some text...", "embedding": [0.01, -0.02, ...]},
+      {"chunk_id": "123-1", "content": "More text...", "embedding": [0.03, -0.04, ...]}
+    ]
+    """
+    embedder, default_batch = _get_embedder()
+    batch = batch_size if batch_size > 0 else default_batch
+    total = len(chunks)
+
+    try:
+        for i in range(0, total, batch):
+            batch_chunks = chunks[i:i + batch]
+            texts = [c.get("content", "") for c in batch_chunks]
+
+            embeddings = await embedder.embed_batch(texts)
+
+            for chunk, embedding in zip(batch_chunks, embeddings):
+                chunk["embedding"] = embedding
+
+        return chunks
+
+    finally:
+        await embedder.close()
+
+
+@mcp.tool()
+async def chunk_and_embed_space(
+    space_key: str,
+    include_attachments: bool = True,
+    embedding_batch_size: int = 32,
+) -> list[dict[str, Any]]:
+    """Crawl a Confluence space, chunk pages, and embed all chunks for RAG.
+
+    Combines chunk_space_for_rag and embed_chunks into a single tool.
+    Crawls the space, splits pages into semantic chunks using an LLM,
+    then calls an external embedding API to get vectors for each chunk.
+
+    Args:
+        space_key: The Confluence space key (e.g. 'ENG', 'DOC').
+        include_attachments: Whether to extract and chunk attachments (default True).
+        embedding_batch_size: Chunks per embedding API call (default 32).
+
+    Returns:
+        List of page results with chunks that include embedding vectors:
+        - page_id, title, space_key, path, total_chunks
+        - chunks: List of chunk objects with:
+            - chunk_id, page_id, title, space_key, path
+            - content: Chunk markdown
+            - embedding: Vector of floats
+            - heading_path, created_date, last_modified
+            - source_file, source_media_type (for attachment chunks)
+    """
+    client = _get_confluence_client()
+    chunker = _get_chunker()
+    embedder, batch = _get_embedder()
+    results: list[dict[str, Any]] = []
+
+    try:
+        all_pages = await client.get_all_pages_paginated(space_key)
+
+        if not all_pages:
+            return []
+
+        all_chunks: list[dict[str, Any]] = []
+        page_map: dict[str, dict[str, Any]] = {}
+
+        for page in all_pages:
+            page_id = page.get("id", "")
+
+            try:
+                full_page = await client.get_page(page_id)
+            except Exception:
+                full_page = page
+
+            content = convert_page_to_markdown(full_page, space_key)
+            path = generate_page_path(full_page, space_key)
+
+            attachments_info: list[dict[str, Any]] = []
+            attachments = full_page.get("children", {}).get("attachment", {}).get("results", [])
+
+            if attachments and include_attachments:
+                for att in attachments:
+                    att_filename = att.get("title", "")
+                    media_type = att.get("extensions", {}).get("mediaType", "")
+                    file_size = att.get("extensions", {}).get("fileSize", 0)
+
+                    if _is_binary_type(media_type):
+                        continue
+
+                    try:
+                        download_path = f"/download/attachments/{page_id}/{att_filename}"
+                        att_bytes = await client.download_attachment(download_path)
+                        extracted = FileExtractor.extract(att_filename, att_bytes)
+
+                        attachments_info.append({
+                            "filename": att_filename,
+                            "content": extracted,
+                            "media_type": media_type,
+                            "size": file_size,
+                        })
+                    except Exception:
+                        pass
+
+            history = full_page.get("history", {})
+            version = full_page.get("version", {})
+            created_date = history.get("createdDate", "")
+            last_modified = version.get("when", "")
+
+            page_result = chunker.chunk_page(
+                content=content,
+                page_id=page_id,
+                title=full_page.get("title", ""),
+                space_key=space_key,
+                path=path,
+                created_date=created_date,
+                last_modified=last_modified,
+                attachments=attachments_info if include_attachments else None,
+            )
+
+            page_map[page_id] = page_result
+            all_chunks.extend(page_result["chunks"])
+
+        if all_chunks:
+            texts = [c["content"] for c in all_chunks]
+            embeddings = await embedder.embed_batch(texts)
+
+            for chunk, embedding in zip(all_chunks, embeddings):
+                chunk["embedding"] = embedding
+
+        for page_id, page_result in page_map.items():
+            results.append(page_result)
+
+        return results
+
+    finally:
+        await client.close()
+        await embedder.close()
 
 
 def _is_binary_type(media_type: str) -> bool:
