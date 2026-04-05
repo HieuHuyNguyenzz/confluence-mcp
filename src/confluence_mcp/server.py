@@ -81,6 +81,8 @@ async def get_page_as_markdown(page_id: str, include_attachments: bool = True) -
     Args:
         page_id: The Confluence page ID (numeric).
         include_attachments: Whether to extract attachment content (default True).
+            Only text-based files are extracted (PDF, DOCX, XLSX, CSV, etc.).
+            Binary files (images, videos, archives) are skipped.
 
     Returns:
         Dictionary with title, content (markdown), space_key, page_id, path,
@@ -107,12 +109,6 @@ async def get_page_as_markdown(page_id: str, include_attachments: bool = True) -
                 file_size = att.get("extensions", {}).get("fileSize", 0)
 
                 if _is_binary_type(media_type):
-                    attachments_info.append({
-                        "filename": att_filename,
-                        "content": f"[Binary file skipped: {media_type}]",
-                        "media_type": media_type,
-                        "size": file_size,
-                    })
                     continue
 
                 try:
@@ -133,13 +129,6 @@ async def get_page_as_markdown(page_id: str, include_attachments: bool = True) -
                         "media_type": media_type,
                         "size": file_size,
                     })
-        else:
-            for att in attachments:
-                attachments_info.append({
-                    "filename": att.get("title", ""),
-                    "media_type": att.get("extensions", {}).get("mediaType", ""),
-                    "size": att.get("extensions", {}).get("fileSize", 0),
-                })
 
         return {
             "page_id": page.get("id", ""),
@@ -157,19 +146,20 @@ async def get_page_as_markdown(page_id: str, include_attachments: bool = True) -
 async def crawl_space(
     space_key: str,
     include_attachments: bool = True,
-    skip_binary: bool = False,
 ) -> list[dict[str, Any]]:
     """Crawl an entire Confluence space and convert all pages to Markdown.
 
     Fetches all pages (including child pages) in the specified space,
-    extracts content from attachments, and returns the complete list
+    extracts content from text-based attachments, and returns the complete list
     of page contents with attachment content.
+
+    Binary files (images, videos, archives, executables) are automatically skipped.
+    Only text-based files are extracted: PDF, DOCX, XLSX, PPTX, CSV, JSON, XML,
+    HTML, TXT, and source code files.
 
     Args:
         space_key: The Confluence space key (e.g. 'ENG', 'DOC').
         include_attachments: Whether to extract attachment content (default True).
-        skip_binary: If True, skip binary files (images, videos, archives).
-            If False, binary files return a placeholder message.
 
     Returns:
         List of page objects, each containing:
@@ -213,13 +203,7 @@ async def crawl_space(
                     media_type = att.get("extensions", {}).get("mediaType", "")
                     file_size = att.get("extensions", {}).get("fileSize", 0)
 
-                    if skip_binary and _is_binary_type(media_type):
-                        attachments_info.append({
-                            "filename": att_filename,
-                            "content": f"[Binary file skipped: {media_type}]",
-                            "media_type": media_type,
-                            "size": file_size,
-                        })
+                    if _is_binary_type(media_type):
                         continue
 
                     try:
@@ -257,7 +241,10 @@ async def crawl_space(
 
 
 def _is_binary_type(media_type: str) -> bool:
-    """Check if a media type is binary (not extractable as text)."""
+    """Check if a media type is binary (not extractable as text).
+    
+    Binary files are skipped - only text-based files are extracted.
+    """
     binary_types = (
         "image/",
         "video/",
@@ -267,11 +254,16 @@ def _is_binary_type(media_type: str) -> bool:
         "application/x-7z",
         "application/x-tar",
         "application/gzip",
+        "application/x-bzip2",
+        "application/x-xz",
         "application/x-executable",
         "application/x-dosexec",
         "application/x-iso",
+        "application/x-msdownload",
+        "application/x-mach-binary",
         "application/octet-stream",
         "font/",
+        "application/x-font",
     )
     return any(media_type.startswith(t) for t in binary_types)
 
