@@ -86,6 +86,7 @@ async def get_page_as_markdown(page_id: str, include_attachments: bool = True) -
 
     Returns:
         Dictionary with title, content (markdown), space_key, page_id, path,
+        created_date, last_modified, created_by, last_modified_by,
         and attachments with extracted content.
     """
     client = _get_confluence_client()
@@ -98,6 +99,11 @@ async def get_page_as_markdown(page_id: str, include_attachments: bool = True) -
 
         content = convert_page_to_markdown(page, space_key)
         path = generate_page_path(page, space_key)
+
+        version = page.get("version", {})
+        history = page.get("history", {})
+        created_by = history.get("createdBy", {})
+        last_modified_by = history.get("lastUpdated", {}).get("by", {})
 
         attachments_info = []
         attachments = page.get("children", {}).get("attachment", {}).get("results", [])
@@ -136,6 +142,10 @@ async def get_page_as_markdown(page_id: str, include_attachments: bool = True) -
             "space_key": space_key,
             "path": path,
             "content": content,
+            "created_date": history.get("createdDate", ""),
+            "last_modified": version.get("when", ""),
+            "created_by": created_by.get("displayName", created_by.get("username", "")),
+            "last_modified_by": last_modified_by.get("displayName", last_modified_by.get("username", "")),
             "attachments": attachments_info,
         }
     finally:
@@ -168,6 +178,10 @@ async def crawl_space(
         - space_key: Space key
         - path: Relative file path
         - content: Full Markdown content of the page
+        - created_date: ISO 8601 timestamp when page was created
+        - last_modified: ISO 8601 timestamp when page was last modified
+        - created_by: Display name of page creator
+        - last_modified_by: Display name of last modifier
         - attachments: List of attachment objects with extracted content:
             - filename: Attachment filename
             - content: Extracted Markdown content
@@ -225,12 +239,21 @@ async def crawl_space(
                             "size": file_size,
                         })
 
+            version = full_page.get("version", {})
+            history = full_page.get("history", {})
+            created_by = history.get("createdBy", {})
+            last_modified_by = history.get("lastUpdated", {}).get("by", {})
+
             results.append({
                 "page_id": page_id,
                 "title": full_page.get("title", ""),
                 "space_key": space_key,
                 "path": path,
                 "content": content,
+                "created_date": history.get("createdDate", ""),
+                "last_modified": version.get("when", ""),
+                "created_by": created_by.get("displayName", created_by.get("username", "")),
+                "last_modified_by": last_modified_by.get("displayName", last_modified_by.get("username", "")),
                 "attachments": attachments_info,
             })
 

@@ -81,7 +81,7 @@ class ConfluenceClient:
     async def get_page(
         self,
         page_id: str,
-        expand: str = "body.view,children.attachment,ancestors,version",
+        expand: str = "body.view,children.attachment,ancestors,version,history",
     ) -> dict[str, Any]:
         """Get a single page by ID with expanded content."""
         return await self._get(

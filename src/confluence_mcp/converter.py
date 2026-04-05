@@ -157,7 +157,16 @@ class ConfluenceMarkdownConverter:
         return markdown
 
 
-def build_frontmatter(title: str, space_key: str, page_id: str, parent_id: str | None = None) -> str:
+def build_frontmatter(
+    title: str,
+    space_key: str,
+    page_id: str,
+    parent_id: str | None = None,
+    created_date: str | None = None,
+    last_modified: str | None = None,
+    created_by: str | None = None,
+    last_modified_by: str | None = None,
+) -> str:
     """Build YAML frontmatter for a page."""
     lines = [
         "---",
@@ -167,6 +176,14 @@ def build_frontmatter(title: str, space_key: str, page_id: str, parent_id: str |
     ]
     if parent_id:
         lines.append(f"parent_id: {parent_id}")
+    if created_date:
+        lines.append(f"created_date: {created_date}")
+    if last_modified:
+        lines.append(f"last_modified: {last_modified}")
+    if created_by:
+        lines.append(f"created_by: {created_by}")
+    if last_modified_by:
+        lines.append(f"last_modified_by: {last_modified_by}")
     lines.append("---")
     return "\n".join(lines)
 
@@ -186,11 +203,20 @@ def convert_page_to_markdown(
     ancestors = page.get("ancestors", [])
     parent_id = ancestors[-1].get("id") if ancestors else None
 
+    history = page.get("history", {})
+    version = page.get("version", {})
+    created_by_info = history.get("createdBy", {})
+    last_updated_by = history.get("lastUpdated", {}).get("by", {})
+
     frontmatter = build_frontmatter(
         title=title,
         space_key=space_key,
         page_id=page_id,
         parent_id=parent_id,
+        created_date=history.get("createdDate"),
+        last_modified=version.get("when"),
+        created_by=created_by_info.get("displayName", created_by_info.get("username")),
+        last_modified_by=last_updated_by.get("displayName", last_updated_by.get("username")),
     )
 
     converter = ConfluenceMarkdownConverter()
