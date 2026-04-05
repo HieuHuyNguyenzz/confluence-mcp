@@ -33,16 +33,84 @@ CONFLUENCE_VERIFY_SSL=true
 
 ## Chạy server
 
-### Stdio mode (cho Claude Desktop, Cursor...)
+### Local (Stdio mode)
+
+Cho Claude Desktop, Cursor...
 
 ```bash
 python -m confluence_mcp.server
 ```
 
-### HTTP mode
+### Local (HTTP mode)
 
 ```bash
 python -m confluence_mcp.server --transport streamable-http
+```
+
+### Docker (khuyên dùng cho server)
+
+**Cách 1: docker compose (khuyên dùng)**
+
+```bash
+# 1. Copy và điền file .env
+cp .env.example .env
+
+# 2. Build và chạy
+docker compose up -d --build
+
+# Server chạy tại http://localhost:8000
+```
+
+**Cách 2: docker build thủ công**
+
+```bash
+# Build image
+docker build -t confluence-mcp .
+
+# Chạy container
+docker run -d \
+  --name confluence-mcp \
+  -p 8000:8000 \
+  --env-file .env \
+  confluence-mcp
+```
+
+**Cách 3: Chạy trên server remote**
+
+```bash
+# Clone repo trên server
+git clone https://github.com/HieuHuyNguyenzz/confluence-mcp.git
+cd confluence-mcp
+
+# Tạo file .env
+cp .env.example .env
+nano .env  # Điền credentials
+
+# Build và chạy
+docker compose up -d --build
+
+# Kiểm tra logs
+docker compose logs -f
+
+# Server chạy tại http://<server-ip>:8000/mcp
+```
+
+**Cấu hình reverse proxy (nginx)**
+
+```nginx
+server {
+    listen 80;
+    server_name mcp.yourdomain.com;
+
+    location / {
+        proxy_pass http://localhost:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}
 ```
 
 ## Cấu hình trong Claude Desktop
