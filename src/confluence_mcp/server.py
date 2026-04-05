@@ -1,10 +1,8 @@
 """FastMCP server for Confluence."""
 
 import os
-from pathlib import Path
 from typing import Any
 
-import httpx
 from dotenv import load_dotenv
 from fastmcp import FastMCP
 
@@ -13,6 +11,7 @@ from confluence_mcp.converter import (
     convert_page_to_markdown,
     generate_page_path,
 )
+from confluence_mcp.extractor import FileExtractor
 
 load_dotenv()
 
@@ -76,14 +75,16 @@ async def list_spaces(limit: int = 25, start: int = 0) -> list[dict[str, Any]]:
 
 
 @mcp.tool()
-async def get_page_as_markdown(page_id: str) -> dict[str, Any]:
+async def get_page_as_markdown(page_id: str, include_attachments: bool = True) -> dict[str, Any]:
     """Get a single Confluence page as Markdown by its page ID.
 
     Args:
         page_id: The Confluence page ID (numeric).
+        include_attachments: Whether to extract attachment content (default True).
 
     Returns:
-        Dictionary with title, content (markdown), space_key, page_id, and path.
+        Dictionary with title, content (markdown), space_key, page_id, path,
+        and attachments with extracted content.
     """
     client = _get_confluence_client()
     try:
@@ -98,12 +99,47 @@ async def get_page_as_markdown(page_id: str) -> dict[str, Any]:
 
         attachments_info = []
         attachments = page.get("children", {}).get("attachment", {}).get("results", [])
-        for att in attachments:
-            attachments_info.append({
-                "filename": att.get("title", ""),
-                "media_type": att.get("extensions", {}).get("mediaType", ""),
-                "size": att.get("extensions", {}).get("fileSize", 0),
-            })
+
+        if attachments and include_attachments:
+            for att in attachments:
+                att_filename = att.get("title", "")
+                media_type = att.get("extensions", {}).get("mediaType", "")
+                file_size = att.get("extensions", {}).get("fileSize", 0)
+
+                if _is_binary_type(media_type):
+                    attachments_info.append({
+                        "filename": att_filename,
+                        "content": f"[Binary file skipped: {media_type}]",
+                        "media_type": media_type,
+                        "size": file_size,
+                    })
+                    continue
+
+                try:
+                    download_path = f"/download/attachments/{page_id}/{att_filename}"
+                    att_bytes = await client.download_attachment(download_path)
+                    extracted = FileExtractor.extract(att_filename, att_bytes)
+
+                    attachments_info.append({
+                        "filename": att_filename,
+                        "content": extracted,
+                        "media_type": media_type,
+                        "size": file_size,
+                    })
+                except Exception as e:
+                    attachments_info.append({
+                        "filename": att_filename,
+                        "content": f"[Error: {str(e)}]",
+                        "media_type": media_type,
+                        "size": file_size,
+                    })
+        else:
+            for att in attachments:
+                attachments_info.append({
+                    "filename": att.get("title", ""),
+                    "media_type": att.get("extensions", {}).get("mediaType", ""),
+                    "size": att.get("extensions", {}).get("fileSize", 0),
+                })
 
         return {
             "page_id": page.get("id", ""),
@@ -121,19 +157,19 @@ async def get_page_as_markdown(page_id: str) -> dict[str, Any]:
 async def crawl_space(
     space_key: str,
     include_attachments: bool = True,
-    output_dir: str | None = None,
+    skip_binary: bool = False,
 ) -> list[dict[str, Any]]:
     """Crawl an entire Confluence space and convert all pages to Markdown.
 
     Fetches all pages (including child pages) in the specified space,
-    downloads attachments, converts everything to Markdown, and returns
-    the complete list of page contents.
+    extracts content from attachments, and returns the complete list
+    of page contents with attachment content.
 
     Args:
         space_key: The Confluence space key (e.g. 'ENG', 'DOC').
-        include_attachments: Whether to download page attachments (default True).
-        output_dir: Directory to save files locally. If None, content is
-            returned in the response without saving to disk.
+        include_attachments: Whether to extract attachment content (default True).
+        skip_binary: If True, skip binary files (images, videos, archives).
+            If False, binary files return a placeholder message.
 
     Returns:
         List of page objects, each containing:
@@ -141,8 +177,12 @@ async def crawl_space(
         - title: Page title
         - space_key: Space key
         - path: Relative file path
-        - content: Full Markdown content
-        - attachments: List of downloaded attachment info
+        - content: Full Markdown content of the page
+        - attachments: List of attachment objects with extracted content:
+            - filename: Attachment filename
+            - content: Extracted Markdown content
+            - media_type: MIME type
+            - size: File size in bytes
     """
     client = _get_confluence_client()
     results: list[dict[str, Any]] = []
@@ -168,46 +208,38 @@ async def crawl_space(
             attachments = full_page.get("children", {}).get("attachment", {}).get("results", [])
 
             if attachments and include_attachments:
-                base_output = Path(output_dir) if output_dir else None
-
                 for att in attachments:
                     att_filename = att.get("title", "")
-                    att_id = att.get("id", "")
+                    media_type = att.get("extensions", {}).get("mediaType", "")
+                    file_size = att.get("extensions", {}).get("fileSize", 0)
+
+                    if skip_binary and _is_binary_type(media_type):
+                        attachments_info.append({
+                            "filename": att_filename,
+                            "content": f"[Binary file skipped: {media_type}]",
+                            "media_type": media_type,
+                            "size": file_size,
+                        })
+                        continue
 
                     try:
                         download_path = f"/download/attachments/{page_id}/{att_filename}"
-                        att_content = await client.download_attachment(download_path)
-
-                        if base_output:
-                            att_dir = base_output / Path(path).parent / "attachments"
-                            att_dir.mkdir(parents=True, exist_ok=True)
-                            att_path = att_dir / att_filename
-                            att_path.write_bytes(att_content)
-                            local_path = str(att_dir / att_filename)
-
-                            content = content.replace(
-                                f"./attachments/{att_filename}",
-                                f"./attachments/{att_filename}",
-                            )
-                        else:
-                            local_path = f"attachments/{att_filename}"
+                        att_bytes = await client.download_attachment(download_path)
+                        extracted = FileExtractor.extract(att_filename, att_bytes)
 
                         attachments_info.append({
                             "filename": att_filename,
-                            "local_path": local_path,
-                            "media_type": att.get("extensions", {}).get("mediaType", ""),
-                            "size": att.get("extensions", {}).get("fileSize", 0),
+                            "content": extracted,
+                            "media_type": media_type,
+                            "size": file_size,
                         })
                     except Exception as e:
                         attachments_info.append({
                             "filename": att_filename,
-                            "error": str(e),
+                            "content": f"[Error: {str(e)}]",
+                            "media_type": media_type,
+                            "size": file_size,
                         })
-
-            if output_dir:
-                full_path = Path(output_dir) / path
-                full_path.parent.mkdir(parents=True, exist_ok=True)
-                full_path.write_text(content, encoding="utf-8")
 
             results.append({
                 "page_id": page_id,
@@ -222,6 +254,26 @@ async def crawl_space(
 
     finally:
         await client.close()
+
+
+def _is_binary_type(media_type: str) -> bool:
+    """Check if a media type is binary (not extractable as text)."""
+    binary_types = (
+        "image/",
+        "video/",
+        "audio/",
+        "application/zip",
+        "application/x-rar",
+        "application/x-7z",
+        "application/x-tar",
+        "application/gzip",
+        "application/x-executable",
+        "application/x-dosexec",
+        "application/x-iso",
+        "application/octet-stream",
+        "font/",
+    )
+    return any(media_type.startswith(t) for t in binary_types)
 
 
 if __name__ == "__main__":
