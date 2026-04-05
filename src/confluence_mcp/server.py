@@ -6,6 +6,7 @@ from typing import Any
 from dotenv import load_dotenv
 from fastmcp import FastMCP
 
+from confluence_mcp.chunker import RAGChunker
 from confluence_mcp.client import ConfluenceClient
 from confluence_mcp.converter import (
     convert_page_to_markdown,
@@ -256,6 +257,136 @@ async def crawl_space(
                 "last_modified_by": last_modified_by.get("displayName", last_modified_by.get("username", "")),
                 "attachments": attachments_info,
             })
+
+        return results
+
+    finally:
+        await client.close()
+
+
+def _get_chunker() -> RAGChunker:
+    """Create a RAG chunker from environment variables."""
+    base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    api_key = os.getenv("OPENAI_API_KEY", "")
+    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    max_tokens = int(os.getenv("CHUNK_MAX_TOKENS", "800"))
+
+    if not api_key:
+        raise ValueError(
+            "Missing OpenAI API key. "
+            "Set OPENAI_API_KEY in your .env file."
+        )
+
+    return RAGChunker(
+        base_url=base_url,
+        api_key=api_key,
+        model=model,
+        max_tokens=max_tokens,
+    )
+
+
+@mcp.tool()
+async def chunk_space_for_rag(
+    space_key: str,
+    include_attachments: bool = True,
+) -> list[dict[str, Any]]:
+    """Crawl a Confluence space and chunk all pages for RAG embedding.
+
+    Uses an LLM (OpenAI-compatible API) to intelligently split page content
+    into semantically coherent chunks suitable for vector embedding.
+
+    Each page is crawled, converted to markdown, then split by the LLM
+    into self-contained chunks with heading context preserved.
+    Attachments are also chunked if include_attachments is True.
+
+    Args:
+        space_key: The Confluence space key (e.g. 'ENG', 'DOC').
+        include_attachments: Whether to extract and chunk attachments (default True).
+
+    Returns:
+        List of page chunk results, each containing:
+        - page_id: Confluence page ID
+        - title: Page title
+        - space_key: Space key
+        - path: Relative file path
+        - total_chunks: Total number of chunks for this page (including attachments)
+        - chunks: List of chunk objects:
+            - chunk_id: Unique ID (format: page_id-index or page_id-att-filename-index)
+            - page_id: Parent page ID
+            - title: Parent page title
+            - space_key: Space key
+            - path: Parent page path
+            - content: Chunk markdown content
+            - heading_path: Heading breadcrumb (H1 > H2 > H3)
+            - created_date: Page creation date (ISO 8601)
+            - last_modified: Page last modified date (ISO 8601)
+            - source_file: Attachment filename (only for attachment chunks)
+            - source_media_type: Attachment MIME type (only for attachment chunks)
+    """
+    client = _get_confluence_client()
+    chunker = _get_chunker()
+    results: list[dict[str, Any]] = []
+
+    try:
+        all_pages = await client.get_all_pages_paginated(space_key)
+
+        if not all_pages:
+            return []
+
+        for page in all_pages:
+            page_id = page.get("id", "")
+
+            try:
+                full_page = await client.get_page(page_id)
+            except Exception:
+                full_page = page
+
+            content = convert_page_to_markdown(full_page, space_key)
+            path = generate_page_path(full_page, space_key)
+
+            attachments_info: list[dict[str, Any]] = []
+            attachments = full_page.get("children", {}).get("attachment", {}).get("results", [])
+
+            if attachments and include_attachments:
+                for att in attachments:
+                    att_filename = att.get("title", "")
+                    media_type = att.get("extensions", {}).get("mediaType", "")
+                    file_size = att.get("extensions", {}).get("fileSize", 0)
+
+                    if _is_binary_type(media_type):
+                        continue
+
+                    try:
+                        download_path = f"/download/attachments/{page_id}/{att_filename}"
+                        att_bytes = await client.download_attachment(download_path)
+                        extracted = FileExtractor.extract(att_filename, att_bytes)
+
+                        attachments_info.append({
+                            "filename": att_filename,
+                            "content": extracted,
+                            "media_type": media_type,
+                            "size": file_size,
+                        })
+                    except Exception:
+                        pass
+
+            history = full_page.get("history", {})
+            version = full_page.get("version", {})
+            created_date = history.get("createdDate", "")
+            last_modified = version.get("when", "")
+
+            page_result = chunker.chunk_page(
+                content=content,
+                page_id=page_id,
+                title=full_page.get("title", ""),
+                space_key=space_key,
+                path=path,
+                created_date=created_date,
+                last_modified=last_modified,
+                attachments=attachments_info if include_attachments else None,
+            )
+
+            results.append(page_result)
 
         return results
 
