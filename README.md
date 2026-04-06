@@ -49,7 +49,22 @@ python -m confluence_mcp.server --transport streamable-http
 
 ### Docker (khuyên dùng cho server)
 
-**Cách 1: docker compose (khuyên dùng)**
+**Cách 1: Dùng script triển khai nhanh (Khuyên dùng)**
+
+Script `deploy.sh` tự động hóa quá trình build image với hỗ trợ Proxy và chạy container.
+
+```bash
+# 1. Copy và điền file .env
+cp .env.example .env
+
+# 2. Chạy script deploy
+chmod +x deploy.sh
+./deploy.sh
+
+# Server chạy tại http://localhost:8000
+```
+
+**Cách 2: docker compose**
 
 ```bash
 # 1. Copy và điền file .env
@@ -59,20 +74,6 @@ cp .env.example .env
 docker compose up -d --build
 
 # Server chạy tại http://localhost:8000
-```
-
-**Cách 2: docker build thủ công**
-
-```bash
-# Build image
-docker build -t confluence-mcp .
-
-# Chạy container
-docker run -d \
-  --name confluence-mcp \
-  -p 8000:8000 \
-  --env-file .env \
-  confluence-mcp
 ```
 
 **Cách 3: Chạy trên server remote**
@@ -86,11 +87,12 @@ cd confluence-mcp
 cp .env.example .env
 nano .env  # Điền credentials
 
-# Build và chạy
-docker compose up -d --build
+# Build và chạy nhanh
+chmod +x deploy.sh
+./deploy.sh
 
 # Kiểm tra logs
-docker compose logs -f
+docker logs -f bitu-confluence-mcp
 
 # Server chạy tại http://<server-ip>:8000/mcp
 ```
@@ -135,6 +137,8 @@ Thêm vào `claude_desktop_config.json`:
 
 ## Tools
 
+**Lưu ý:** Tất cả các tool crawl đều sử dụng xử lý song song (parallel fetching) để tối ưu tốc độ cho các Space có dữ liệu lớn.
+
 ### `list_spaces`
 
 Liệt kê tất cả Confluence spaces có thể truy cập.
@@ -162,6 +166,7 @@ Lấy nội dung một page cụ thể dưới dạng Markdown.
 
 **Parameters:**
 - `page_id` (str): Confluence page ID (numeric)
+- `include_attachments` (bool, default: true): Có trích xuất file đính kèm không
 
 **Returns:**
 ```json
@@ -179,12 +184,11 @@ Lấy nội dung một page cụ thể dưới dạng Markdown.
 
 ### `crawl_space`
 
-Crawl toàn bộ space, bao gồm tất cả pages (cả child pages), download attachments và convert sang Markdown.
+Crawl toàn bộ space, bao gồm tất cả pages (cả child pages), download attachments và convert sang Markdown. Toàn bộ quá trình xử lý diễn ra in-memory để đảm bảo tốc độ và bảo mật.
 
 **Parameters:**
 - `space_key` (str): Confluence space key (vd: `ENG`, `DOC`)
 - `include_attachments` (bool, default: true): Có download attachments không
-- `output_dir` (str | None): Thư mục lưu files. Nếu `None`, chỉ trả về trong response
 
 **Returns:**
 ```json
@@ -198,9 +202,9 @@ Crawl toàn bộ space, bao gồm tất cả pages (cả child pages), download 
     "attachments": [
       {
         "filename": "file.pdf",
-        "local_path": "output/ENG/Parent/attachments/file.pdf",
         "media_type": "application/pdf",
-        "size": 54321
+        "size": 54321,
+        "content": "...extracted text..."
       }
     ]
   }
@@ -214,12 +218,14 @@ confluence-mcp/
 ├── pyproject.toml
 ├── .env.example
 ├── .gitignore
+├── deploy.sh           # Script triển khai Docker nhanh
 └── src/
     └── confluence_mcp/
         ├── __init__.py
         ├── server.py           # FastMCP server + 3 tools
         ├── client.py           # Confluence REST API wrapper
-        └── converter.py        # HTML → Markdown converter
+        ├── converter.py        # HTML → Markdown converter
+        └── extractor.py        # File attachment extractor
 ```
 
 ## Tech Stack
