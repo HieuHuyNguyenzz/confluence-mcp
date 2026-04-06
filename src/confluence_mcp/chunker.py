@@ -75,17 +75,29 @@ Markdown content:
         )
 
         raw = response.choices[0].message.content or "[]"
-
         raw = raw.strip()
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-        if raw.startswith("json"):
-            raw = raw[4:].strip()
+
+        # Extract JSON content from potential markdown code fences
+        if "```" in raw:
+            import re
+            match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", raw)
+            if match:
+                raw = match.group(1).strip()
 
         try:
             data = json.loads(raw)
         except json.JSONDecodeError:
-            return [{"content": content, "heading_path": ""}]
+            # Final attempt: try to find the first '[' and last ']'
+            try:
+                start = raw.find("[")
+                end = raw.rfind("]")
+                if start != -1 and end != -1:
+                    data = json.loads(raw[start:end+1])
+                else:
+                    return [{"content": content, "heading_path": ""}]
+            except json.JSONDecodeError:
+                return [{"content": content, "heading_path": ""}]
+
 
         if isinstance(data, dict):
             items = data.get("chunks", data.get("items", []))
