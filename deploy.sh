@@ -3,13 +3,21 @@
 # Configuration
 IMAGE_NAME="bitu-confluence-mcp:v1"
 CONTAINER_NAME="bitu-confluence-mcp"
+# Proxy for build-time dependency installation
+HTTP_PROXY="http://10.255.249.100:3128"
+HTTPS_PROXY="http://10.255.249.100:3128"
+NO_PROXY="localhost,127.0.0.1,.viettelcyber.com"
 # Using values from the working reference MCP
 CONFLUENCE_HOST="confluence.viettelcyber.com"
 CONFLUENCE_IP="10.255.244.100"
 DNS_SERVER="10.255.244.100"
 
 echo "Building Docker image: $IMAGE_NAME..."
-docker build -t "$IMAGE_NAME" .
+docker build \
+  --build-arg HTTP_PROXY="$HTTP_PROXY" \
+  --build-arg HTTPS_PROXY="$HTTPS_PROXY" \
+  --build-arg NO_PROXY="$NO_PROXY" \
+  -t "$IMAGE_NAME" .
 
 echo "Starting container: $CONTAINER_NAME..."
 # Remove existing container if it exists
