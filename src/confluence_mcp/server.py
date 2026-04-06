@@ -7,13 +7,11 @@ from typing import Any
 from dotenv import load_dotenv
 from fastmcp import FastMCP
 
-from confluence_mcp.chunker import RAGChunker
 from confluence_mcp.client import ConfluenceClient
 from confluence_mcp.converter import (
     convert_page_to_markdown,
     generate_page_path,
 )
-from confluence_mcp.embedder import EmbeddingClient
 from confluence_mcp.extractor import FileExtractor
 
 load_dotenv()
@@ -185,17 +183,8 @@ async def get_page_as_markdown(page_id: str, include_attachments: bool = True) -
     client = _get_confluence_client()
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
     try:
-        # Use the helper to ensure consistency and support for attachments
         page_summary = {"id": page_id}
-        return await _process_page(client, page_summary, "", include_attachments, semaphore)
-    except Exception as e:
-        # In case of failure, we can't use _process_page easily because space_key might be missing
-        # Let's just handle the error or refine the helper.
-        # Actually, let's just call the helper. The space_key is filled inside _process_page if it's available.
-        # Wait, _process_page uses space_key for converter and path.
-        # For a single page, we should fetch the page first to get the space_key.
-        
-        # Redefining logic for single page to be safe
+        # We first need to get the page to find its space_key for conversion
         page = await client.get_page(page_id)
         space_key = page.get("space", {}).get("key", "")
         return await _process_page(client, page, space_key, include_attachments, semaphore)
@@ -223,140 +212,6 @@ async def crawl_space(
         return await asyncio.gather(*tasks)
     finally:
         await client.close()
-
-
-def _get_chunker() -> RAGChunker:
-    """Create a RAG chunker from environment variables."""
-    base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
-    api_key = os.getenv("OPENAI_API_KEY", "")
-    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-    max_tokens = int(os.getenv("CHUNK_MAX_TOKENS", "800"))
-
-    if not api_key:
-        raise ValueError("Missing OpenAI API key. Set OPENAI_API_KEY in your .env file.")
-
-    return RAGChunker(base_url=base_url, api_key=api_key, model=model, max_tokens=max_tokens)
-
-
-@mcp.tool()
-async def chunk_space_for_rag(
-    space_key: str,
-    include_attachments: bool = True,
-) -> list[dict[str, Any]]:
-    """Crawl a Confluence space and chunk all pages for RAG embedding."""
-    client = _get_confluence_client()
-    chunker = _get_chunker()
-    semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
-    try:
-        all_pages = await client.get_all_pages_paginated(space_key)
-        if not all_pages:
-            return []
-
-        tasks = [
-            _process_page(client, page, space_key, include_attachments, semaphore)
-            for page in all_pages
-        ]
-        pages_data = await asyncio.gather(*tasks)
-
-        results = []
-        for page in pages_data:
-            page_result = chunker.chunk_page(
-                content=page["content"],
-                page_id=page["page_id"],
-                title=page["title"],
-                space_key=page["space_key"],
-                path=page["path"],
-                created_date=page["created_date"],
-                last_modified=page["last_modified"],
-                attachments=page["attachments"] if include_attachments else None,
-            )
-            results.append(page_result)
-        return results
-    finally:
-        await client.close()
-
-
-def _get_embedder() -> EmbeddingClient:
-    """Create an embedding client from environment variables."""
-    base_url = os.getenv("EMBEDDING_BASE_URL", "http://localhost:8080")
-    endpoint = os.getenv("EMBEDDING_ENDPOINT", "/embed")
-    api_key = os.getenv("EMBEDDING_API_KEY", "")
-    timeout = float(os.getenv("EMBEDDING_TIMEOUT", "120"))
-    batch_size = int(os.getenv("EMBEDDING_BATCH_SIZE", "32"))
-
-    return EmbeddingClient(base_url=base_url, endpoint=endpoint, api_key=api_key, timeout=timeout), batch_size
-
-
-@mcp.tool()
-async def embed_chunks(
-    chunks: list[dict[str, Any]],
-    batch_size: int = 32,
-) -> list[dict[str, Any]]:
-    """Embed a list of chunks using an external embedding API."""
-    embedder, default_batch = _get_embedder()
-    batch = batch_size if batch_size > 0 else default_batch
-    total = len(chunks)
-
-    try:
-        for i in range(0, total, batch):
-            batch_chunks = chunks[i:i + batch]
-            texts = [c.get("content", "") for c in batch_chunks]
-            embeddings = await embedder.embed_batch(texts)
-            for chunk, embedding in zip(batch_chunks, embeddings):
-                chunk["embedding"] = embedding
-        return chunks
-    finally:
-        await embedder.close()
-
-
-@mcp.tool()
-async def chunk_and_embed_space(
-    space_key: str,
-    include_attachments: bool = True,
-    embedding_batch_size: int = 32,
-) -> list[dict[str, Any]]:
-    """Crawl a Confluence space, chunk pages, and embed all chunks for RAG."""
-    client = _get_confluence_client()
-    chunker = _get_chunker()
-    embedder, batch = _get_embedder()
-    semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
-    try:
-        all_pages = await client.get_all_pages_paginated(space_key)
-        if not all_pages:
-            return []
-
-        tasks = [
-            _process_page(client, page, space_key, include_attachments, semaphore)
-            for page in all_pages
-        ]
-        pages_data = await asyncio.gather(*tasks)
-
-        all_chunks = []
-        page_map = {}
-        for page in pages_data:
-            page_result = chunker.chunk_page(
-                content=page["content"],
-                page_id=page["page_id"],
-                title=page["title"],
-                space_key=page["space_key"],
-                path=page["path"],
-                created_date=page["created_date"],
-                last_modified=page["last_modified"],
-                attachments=page["attachments"] if include_attachments else None,
-            )
-            page_map[page["page_id"]] = page_result
-            all_chunks.extend(page_result["chunks"])
-
-        if all_chunks:
-            texts = [c["content"] for c in all_chunks]
-            embeddings = await embedder.embed_batch(texts)
-            for chunk, embedding in zip(all_chunks, embeddings):
-                chunk["embedding"] = embedding
-
-        return list(page_map.values())
-    finally:
-        await client.close()
-        await embedder.close()
 
 
 if __name__ == "__main__":
