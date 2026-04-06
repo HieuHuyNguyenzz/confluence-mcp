@@ -37,7 +37,7 @@ class ConfluenceClient:
                     "Content-Type": "application/json",
                 },
                 verify=self.verify_ssl,
-                timeout=httpx.Timeout(60.0, connect=10.0),
+                timeout=httpx.Timeout(300.0, connect=20.0),
             )
         return self._client
 

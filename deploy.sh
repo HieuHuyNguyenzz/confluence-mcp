@@ -21,6 +21,9 @@ docker rm -f $CONTAINER_NAME 2>/dev/null || true
 docker run -d \
   -p 8000:8000 \
   --name $CONTAINER_NAME \
+  -e HTTP_PROXY="$HTTP_PROXY" \
+  -e HTTPS_PROXY="$HTTPS_PROXY" \
+  -e NO_PROXY="$NO_PROXY" \
   --env-file .env \
   $IMAGE_NAME
 
