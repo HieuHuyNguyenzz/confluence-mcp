@@ -30,6 +30,7 @@ class DifyClient:
         payload = {
             "name": title,
             "text": txt,
+            "indexing_technique": "economy",
         }
         try:
             resp = await self._client.post(endpoint, json=payload)
