@@ -49,7 +49,7 @@ python -m confluence_mcp.server
 ### Local (HTTP mode)
 
 ```bash
-python -m confluence_server --transport streamable-http
+python -m confluence_mcp.server --transport streamable-http
 ```
 
 ### Docker (khuyên dùng cho server)
