@@ -86,7 +86,11 @@ async def main():
                 return
             print(f"Found {len(spaces)} spaces. Starting global sync...")
             for s in spaces:
-                sk = s.get("key")
+                if isinstance(s, dict):
+                    sk = s.get("key")
+                else:
+                    sk = s
+                
                 if sk:
                     await sync_single_space(c_client, d_client, sk, d_id, sem)
         print("\nAll sync tasks completed successfully.")
