@@ -44,9 +44,16 @@ class ConfluenceClient:
 
     async def _get(self, path: str, params: dict[str, Any] | None = None) -> dict:
         client = await self._get_client()
-        resp = await client.get(path, params=params)
-        resp.raise_for_status()
-        return resp.json()
+        try:
+            resp = await client.get(path, params=params)
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.HTTPStatusError as e:
+            print(f"HTTP error occurred: {e.response.status_code} - {e.response.text}")
+            raise
+        except Exception as e:
+            print(f"Unexpected error during request to {path}: {type(e).__name__}: {str(e)}")
+            raise
 
     async def list_spaces(
         self, limit: int = 25, start: int = 0
