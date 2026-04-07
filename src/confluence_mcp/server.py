@@ -61,7 +61,6 @@ def _is_binary_type(media_type: str) -> bool:
         "application/x-iso",
         "application/x-msdownload",
         "application/x-mach-binary",
-        "application/octet-stream",
         "font/",
         "application/x-font",
     )
@@ -81,6 +80,7 @@ async def _process_attachment(
         file_size = att.get("extensions", {}).get("fileSize", 0)
 
         if _is_binary_type(media_type):
+            print(f"Skipping binary attachment: {att_filename} ({media_type})")
             return None
 
         try:
@@ -88,6 +88,7 @@ async def _process_attachment(
             att_bytes = await client.download_attachment(download_path)
             extracted = FileExtractor.extract(att_filename, att_bytes)
 
+            print(f"Successfully extracted attachment: {att_filename}")
             return {
                 "filename": att_filename,
                 "content": extracted,
@@ -95,6 +96,7 @@ async def _process_attachment(
                 "size": file_size,
             }
         except Exception as e:
+            print(f"Error processing attachment {att_filename}: {str(e)}")
             return {
                 "filename": att_filename,
                 "content": f"[Error: {str(e)}]",
