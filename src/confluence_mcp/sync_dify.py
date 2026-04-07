@@ -35,9 +35,8 @@ class DifyClient:
                 "mode": "automatic"
             },
             "doc_form": "text_model",
-            "doc_language": "English",
+            "doc_language": "Vietnamese",
         }
-        print(f"[DEBUG] Payload: {payload}")
         try:
             resp = await self._client.post(endpoint, json=payload)
             resp.raise_for_status()
