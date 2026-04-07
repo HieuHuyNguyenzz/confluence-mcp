@@ -13,6 +13,7 @@ from confluence_mcp.converter import (
     generate_page_path,
 )
 from confluence_mcp.extractor import FileExtractor
+from confluence_mcp.processor import process_page, process_attachment, is_binary_type
 
 load_dotenv()
 
@@ -41,116 +42,6 @@ def _get_confluence_client() -> ConfluenceClient:
         api_token=api_token,
         verify_ssl=verify_ssl,
     )
-
-
-def _is_binary_type(media_type: str) -> bool:
-    """Check if a media type is binary (not extractable as text)."""
-    binary_types = (
-        "image/",
-        "video/",
-        "audio/",
-        "application/zip",
-        "application/x-rar",
-        "application/x-7z",
-        "application/x-tar",
-        "application/gzip",
-        "application/x-bzip2",
-        "application/x-xz",
-        "application/x-executable",
-        "application/x-dosexec",
-        "application/x-iso",
-        "application/x-msdownload",
-        "application/x-mach-binary",
-        "font/",
-        "application/x-font",
-    )
-    return any(media_type.startswith(t) for t in binary_types)
-
-
-async def _process_attachment(
-    client: ConfluenceClient,
-    page_id: str,
-    att: dict[str, Any],
-    semaphore: asyncio.Semaphore,
-) -> dict[str, Any] | None:
-    """Download and extract a single attachment."""
-    async with semaphore:
-        att_filename = att.get("title", "")
-        media_type = att.get("extensions", {}).get("mediaType", "")
-        file_size = att.get("extensions", {}).get("fileSize", 0)
-
-        if _is_binary_type(media_type):
-            print(f"Skipping binary attachment: {att_filename} ({media_type})")
-            return None
-
-        try:
-            download_path = f"/download/attachments/{page_id}/{att_filename}"
-            att_bytes = await client.download_attachment(download_path)
-            extracted = FileExtractor.extract(att_filename, att_bytes)
-
-            print(f"Successfully extracted attachment: {att_filename}")
-            return {
-                "filename": att_filename,
-                "content": extracted,
-                "media_type": media_type,
-                "size": file_size,
-            }
-        except Exception as e:
-            print(f"Error processing attachment {att_filename}: {str(e)}")
-            return {
-                "filename": att_filename,
-                "content": f"[Error: {str(e)}]",
-                "media_type": media_type,
-                "size": file_size,
-            }
-
-
-async def _process_page(
-    client: ConfluenceClient,
-    page_summary: dict[str, Any],
-    space_key: str,
-    include_attachments: bool,
-    semaphore: asyncio.Semaphore,
-) -> dict[str, Any]:
-    """Fetch full page content and its attachments."""
-    async with semaphore:
-        page_id = page_summary.get("id", "")
-        try:
-            full_page = await client.get_page(page_id)
-        except Exception:
-            full_page = page_summary
-
-        content = convert_page_to_markdown(full_page, space_key)
-        path = generate_page_path(full_page, space_key)
-
-        attachments_info = []
-        attachments = full_page.get("children", {}).get("attachment", {}).get("results", [])
-
-        if attachments and include_attachments:
-            att_tasks = [
-                _process_attachment(client, page_id, att, semaphore)
-                for att in attachments
-            ]
-            att_results = await asyncio.gather(*att_tasks)
-            attachments_info = [r for r in att_results if r is not None]
-
-        version = full_page.get("version", {})
-        history = full_page.get("history", {})
-        created_by = history.get("createdBy", {})
-        last_modified_by = history.get("lastUpdated", {}).get("by", {})
-
-        return {
-            "page_id": page_id,
-            "title": full_page.get("title", ""),
-            "space_key": space_key,
-            "path": path,
-            "content": content,
-            "created_date": history.get("createdDate", ""),
-            "last_modified": version.get("when", ""),
-            "created_by": created_by.get("displayName", created_by.get("username", "")),
-            "last_modified_by": last_modified_by.get("displayName", last_modified_by.get("username", "")),
-            "attachments": attachments_info,
-        }
 
 
 @mcp.tool()
@@ -184,10 +75,9 @@ async def get_page_as_markdown(page_id: str, include_attachments: bool = True) -
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
     try:
         page_summary = {"id": page_id}
-        # We first need to get the page to find its space_key for conversion
         page = await client.get_page(page_id)
         space_key = page.get("space", {}).get("key", "")
-        return await _process_page(client, page, space_key, include_attachments, semaphore)
+        return await process_page(client, page, space_key, include_attachments, semaphore)
     finally:
         await client.close()
 
@@ -201,13 +91,13 @@ async def crawl_space(
     client = _get_confluence_client()
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
     try:
-        all_pages = await client.get_all_pages_paginated(space_key)
-        if not all_pages:
+        pages = await client.get_all_pages_paginated(space_key)
+        if not pages:
             return []
 
         tasks = [
-            _process_page(client, page, space_key, include_attachments, semaphore)
-            for page in all_pages
+            process_page(client, p, space_key, include_attachments, semaphore)
+            for p in pages
         ]
         return await asyncio.gather(*tasks)
     finally:
