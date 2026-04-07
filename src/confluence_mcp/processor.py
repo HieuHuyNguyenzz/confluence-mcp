@@ -50,15 +50,62 @@ async def process_attachment(
             extracted = FileExtractor.extract(att_filename, att_bytes)
 
             return {
-                "filename": att_filename",
+                "filename": att_filename,
                 "content": extracted,
                 "media_type": media_type,
                 "size": file_size,
             }
         except Exception as e:
             return {
-                "filename": att_filename",
+                "filename": att_filename,
                 "content": f"[Error: {str(e)}]",
                 "media_type": media_type,
                 "size": file_size,
             }
+
+async def process_page(
+    client: ConfluenceClient,
+    page_summary: dict[str, Any],
+    space_key: str,
+    include_attachments: bool,
+    semaphore: asyncio.Semaphore,
+) -> dict[str, Any]:
+    """Fetch full page content and its attachments."""
+    async with semaphore:
+        page_id = page_summary.get("id", "")
+        try:
+            full_page = await client.get_page(page_id)
+        except Exception:
+            full_page = page_summary
+
+        content = convert_page_to_markdown(full_page, space_key)
+        path = generate_page_path(full_page, space_key)
+
+        attachments_info = []
+        attachments = full_page.get("children", {}).get("attachment", {}).get("results", [])
+
+        if attachments and include_attachments:
+            att_tasks = [
+                process_attachment(client, page_id, att, semaphore)
+                for att in attachments
+            ]
+            att_results = await asyncio.gather(*att_tasks)
+            attachments_info = [r for r in att_results if r is not None]
+
+        version = full_page.get("version", {})
+        history = full_page.get("history", {})
+        created_by = history.get("createdBy", {})
+        last_modified_by = history.get("lastUpdated", {}).get("by", {})
+
+        return {
+            "page_id": page_id,
+            "title": full_page.get("title", ""),
+            "space_key": space_key,
+            "path": path,
+            "content": content,
+            "created_date": history.get("createdDate", ""),
+            "last_modified": version.get("when", ""),
+            "created_by": created_by.get("displayName", created_by.get("username", "")),
+            "last_modified_by": last_modified_by.get("displayName", last_modified_by.get("username", "")),
+            "attachments": attachments_info,
+        }
