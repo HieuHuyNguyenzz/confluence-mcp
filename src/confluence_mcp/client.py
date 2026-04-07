@@ -120,13 +120,23 @@ class ConfluenceClient:
         return all_pages
 
     async def download_attachment(
-        self, download_path: str
+        self, download_path: str, retries: int = 3
     ) -> bytes:
-        """Download an attachment by its Confluence download path."""
+        """Download an attachment by its Confluence download path with retries and streaming."""
         client = await self._get_client()
-        resp = await client.get(download_path)
-        resp.raise_for_status()
-        return resp.content
+        
+        for attempt in range(retries):
+            try:
+                async with client.stream("GET", download_path) as resp:
+                    resp.raise_for_status()
+                    content = bytearray()
+                    async for chunk in resp.aiter_bytes():
+                        content.extend(chunk)
+                    return bytes(content)
+            except (httpx.HTTPStatusError, httpx.RequestError):
+                if attempt == retries - 1:
+                    raise
+                await asyncio.sleep(1 * (attempt + 1))
 
     async def get_page_attachments(
         self, page_id: str, limit: int = 100, start: int = 0
