@@ -12,20 +12,17 @@ class ConfluenceClient:
     def __init__(
         self,
         base_url: str,
-        username: str,
         api_token: str,
         verify_ssl: bool = True,
     ):
         self.base_url = base_url.rstrip("/")
-        self.auth = self._build_auth(username, api_token)
+        self.auth = self._build_auth(api_token)
         self.verify_ssl = verify_ssl
         self._client: httpx.AsyncClient | None = None
 
     @staticmethod
-    def _build_auth(username: str, api_token: str) -> str:
-        credentials = f"{username}:{api_token}"
-        encoded = base64.b64encode(credentials.encode()).decode()
-        return f"Basic {encoded}"
+    def _build_auth(api_token: str) -> str:
+        return f"Bearer {api_token}"
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:

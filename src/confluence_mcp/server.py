@@ -27,19 +27,17 @@ mcp = FastMCP(
 def _get_confluence_client() -> ConfluenceClient:
     """Create a Confluence client from environment variables."""
     base_url = os.getenv("CONFLUENCE_URL")
-    username = os.getenv("CONFLUENCE_USERNAME")
     api_token = os.getenv("CONFLUENCE_API_TOKEN")
     verify_ssl = os.getenv("CONFLUENCE_VERIFY_SSL", "true").lower() == "true"
 
-    if not base_url or not username or not api_token:
+    if not base_url or not api_token:
         raise ValueError(
             "Missing Confluence configuration. "
-            "Set CONFLUENCE_URL, CONFLUENCE_USERNAME, and CONFLUENCE_API_TOKEN in your .env file."
+            "Set CONFLUENCE_URL and CONFLUENCE_API_TOKEN in your .env file."
         )
 
     return ConfluenceClient(
         base_url=base_url,
-        username=username,
         api_token=api_token,
         verify_ssl=verify_ssl,
     )
