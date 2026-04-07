@@ -30,7 +30,14 @@ class DifyClient:
         payload = {
             "name": title,
             "text": txt,
+            "indexing_technique": "high_quality",
+            "process_rule": {
+                "mode": "automatic"
+            },
+            "doc_form": "text_model",
+            "doc_language": "English",
         }
+        print(f"[DEBUG] Payload: {payload}")
         try:
             resp = await self._client.post(endpoint, json=payload)
             resp.raise_for_status()
