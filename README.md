@@ -1,4 +1,4 @@
-# Confluence MCP Server
+# Bitu Confluence MCP Server
 
 MCP server kết nối LLMs với Confluence Server/Data Center. Cho phép liệt kê spaces, crawl toàn bộ nội dung và convert sang Markdown.
 
@@ -20,9 +20,14 @@ Copy file `.env.example` thành `.env` và điền thông tin:
 
 ```env
 CONFLUENCE_URL=https://confluence.yourcompany.com
-CONFLUENCE_USERNAME=your_username
 CONFLUENCE_API_TOKEN=your_api_token
 CONFLUENCE_VERIFY_SSL=true
+
+# Cấu hình Dify Sync
+DIFY_BASE_URL=https://api.dify.ai/v1
+DIFY_API_KEY=your_dify_api_key
+DIFY_DATASET_ID=your_dataset_id
+SYNC_SPACE_KEY=your_space_key
 ```
 
 ### Lấy API Token
@@ -44,14 +49,14 @@ python -m confluence_mcp.server
 ### Local (HTTP mode)
 
 ```bash
-python -m confluence_mcp.server --transport streamable-http
+python -m confluence_//C- la l_server --transport streamable-http
 ```
 
 ### Docker (khuyên dùng cho server)
 
 **Cách 1: Dùng script triển khai nhanh (Khuyên dùng)**
 
-Script `deploy.sh` tự động hóa quá trình build image với hỗ trợ Proxy và chạy container.
+Script `deploy.sh` tự động hóa quá trình build image với hỗ trợ Proxy nội bộ và chạy container.
 
 ```bash
 # 1. Copy và điền file .env
@@ -80,8 +85,8 @@ docker compose up -d --build
 
 ```bash
 # Clone repo trên server
-git clone https://github.com/HieuHuyNguyenzz/confluence-mcp.git
-cd confluence-mcp
+git clone https://github.com/HieuHuyNguyenzz/bitu-confluence-mcp.git
+cd bitu-confluence-mcp
 
 # Tạo file .env
 cp .env.example .env
@@ -115,6 +120,15 @@ server {
 }
 ```
 
+## Đồng bộ dữ liệu sang Dify (RAG Pipeline)
+
+Nếu bạn muốn nạp toàn bộ dữ liệu từ Confluence vào Dify Knowledge để làm RAG:
+
+```bash
+python -m confluence_mcp.sync_dify
+```
+Script này sẽ tự động crawl Space được cấu hình trong `SYNC_SPACE_KEY` và đẩy toàn bộ nội dung (bao gồm file đính kèm) vào Dify Dataset.
+
 ## Cấu hình trong Claude Desktop
 
 Thêm vào `claude_desktop_config.json`:
@@ -127,7 +141,6 @@ Thêm vào `claude_desktop_config.json`:
       "args": ["-m", "confluence_mcp.server"],
       "env": {
         "CONFLUENCE_URL": "https://confluence.yourcompany.com",
-        "CONFLUENCE_USERNAME": "your_username",
         "CONFLUENCE_API_TOKEN": "your_api_token"
       }
     }
@@ -214,7 +227,7 @@ Crawl toàn bộ space, bao gồm tất cả pages (cả child pages), download 
 ## Cấu trúc project
 
 ```
-confluence-mcp/
+bitu-confluence-mcp/
 ├── pyproject.toml
 ├── .env.example
 ├── .gitignore
@@ -225,7 +238,8 @@ confluence-mcp/
         ├── server.py           # FastMCP server + 3 tools
         ├── client.py           # Confluence REST API wrapper
         ├── converter.py        # HTML → Markdown converter
-        └── extractor.py        # File attachment extractor
+        ├── extractor.py        # File attachment extractor
+        └── sync_dify.py        # Sync pipeline to Dify Knowledge
 ```
 
 ## Tech Stack

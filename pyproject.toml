@@ -1,5 +1,5 @@
 [project]
-name = "confluence-mcp"
+name = "bitu-confluence-mcp"
 version = "0.1.0"
 description = "MCP server for Confluence - list spaces, crawl pages, convert to markdown"
 requires-python = ">=3.10"
