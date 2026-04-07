@@ -78,7 +78,8 @@ class ConfluenceClient:
                 "cql": cql,
                 "limit": limit,
                 "start": start,
-                "expand": "ancestors,children.page,version",
+                "expand": "ancestors,version",
+
             },
         )
 
