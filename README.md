@@ -27,8 +27,10 @@ CONFLUENCE_VERIFY_SSL=true
 DIFY_BASE_URL=https://api.dify.ai/v1
 DIFY_API_KEY=your_dify_api_key
 DIFY_DATASET_ID=your_dataset_id
-SYNC_SPACE_KEY=your_space_key
+# Để trống để sync TẤT CẢ spaces, hoặc điền một space key cụ thể (vd: ENG)
+SYNC_SPACE_KEY=
 ```
+
 
 ### Lấy API Token
 
