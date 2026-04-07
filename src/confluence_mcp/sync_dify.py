@@ -30,12 +30,15 @@ class DifyClient:
         payload = {
             "name": title,
             "text": txt,
-            "indexing_technique": "high_quality",
-            "process_mode": "automatic",
         }
-        resp = await self._client.post(endpoint, json=payload)
-        resp.raise_for_status()
-        return resp.json()
+        try:
+            resp = await self._client.post(endpoint, json=payload)
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.HTTPStatusError as e:
+            print(f"Dify API error: {e.response.status_code}")
+            print(f"Response body: {e.response.text}")
+            raise
 
 async def sync_single_space(c_client, d_client, s_key, d_id, sem):
     try:
