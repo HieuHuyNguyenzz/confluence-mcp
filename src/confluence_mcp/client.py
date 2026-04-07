@@ -55,14 +55,14 @@ class ConfluenceClient:
             print(f"Unexpected error during request to {path}: {type(e).__name__}: {str(e)}")
             raise
 
-    async def list_spaces(
-        self, limit: int = 25, start: int = 0
-    ) -> dict[str, Any]:
-        """List all spaces accessible to the user."""
-        return await self._get(
+    async def list_spaces(self, limit: int = 25, start: int = 0) -> list[dict[str, Any]]:
+        """List all Confluence spaces accessible to the user."""
+        result = await self._get(
             "/rest/api/space",
             params={"limit": limit, "start": start, "expand": "description,metadata"},
         )
+        return result.get("results", [])
+
 
     async def get_all_pages_in_space(
         self,
