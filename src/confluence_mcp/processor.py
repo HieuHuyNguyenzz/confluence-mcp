@@ -50,14 +50,14 @@ async def process_attachment(
             extracted = FileExtractor.extract(att_filename, att_bytes)
 
             return {
-                "filename": att_//C- la l_filename",
+                "filename": att_filename",
                 "content": extracted,
                 "media_type": media_type,
                 "size": file_size,
             }
         except Exception as e:
             return {
-                "filename": att_//C- la l_filename",
+                "filename": att_filename",
                 "content": f"[Error: {str(e)}]",
                 "media_type": media_type,
                 "size": file_size,
