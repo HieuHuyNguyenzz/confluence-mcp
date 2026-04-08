@@ -39,10 +39,14 @@ class DifyWorkflowClient:
     async def run_workflow(self, filename: str, file_id: str):
         """Triggers the Dify Workflow with the uploaded file."""
         endpoint = "/workflows/run"
+        # Dify Workflow file inputs usually expect an object with upload_file_id
         payload = {
             "inputs": {
                 "filename": filename,
-                "file": file_id
+                "file": {
+                    "transfer_method": "local_file",
+                    "upload_file_id": file_id
+                }
             },
             "response_mode": "blocking",
             "user": self.user_id
