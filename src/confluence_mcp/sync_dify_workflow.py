@@ -43,12 +43,11 @@ class DifyWorkflowClient:
         payload = {
             "inputs": {
                 "filename": filename,
-                "file": [
-                    {
-                        "transfer_method": "local_file",
-                        "upload_file_id": file_id
-                    }
-                ]
+                "file": {
+                    "type": "document",
+                    "transfer_method": "local_file",
+                    "upload_file_id": file_id
+                }
             },
             "response_mode": "blocking",
             "user": self.user_id
