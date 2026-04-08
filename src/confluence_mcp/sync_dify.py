@@ -2,7 +2,8 @@
 
 import os
 import asyncio
-from typing import Any, List
+import json
+from typing import Any, List, Dict
 import httpx
 from dotenv import load_dotenv
 from confluence_mcp.client import ConfluenceClient
@@ -10,7 +11,33 @@ from confluence_mcp.processor import process_page, process_attachment
 from confluence_mcp.converter import convert_page_to_markdown, generate_page_path
 from confluence_mcp.extractor import FileExtractor
 
-load_dotenv()
+class SyncStateManager:
+    def __init__(self, state_file: str = "sync_state.json"):
+        self.state_file = state_file
+        self.state = self._load_state()
+
+    def _load_state(self) -> Dict[str, str]:
+        if os.path.exists(self.state_file):
+            try:
+                with open(self.state_file, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as e:
+                print(f"Error loading state file: {e}")
+        return {}
+
+    def get_document_id(self, page_id: str) -> str:
+        return self.state.get(page_id)
+
+    def update_document_id(self, page_id: str, document_id: str):
+        self.state[page_id] = document_id
+        self._save_state()
+
+    def _save_state(self):
+        try:
+            with open(self.state_file, "w", encoding="utf-8") as f:
+                json.dump(self.state, f, indent=2)
+        except Exception as e:
+            print(f"Error saving state file: {e}")
 
 class DifyClient:
     def __init__(self, base_url: str, api_key: str):
@@ -27,13 +54,27 @@ class DifyClient:
 
     async def create_document_from_text(self, dataset_id: str, txt: str, title: str):
         endpoint = f"/datasets/{dataset_id}/document/create_by_text"
+        
+        # Handle custom chunking if env vars are set
+        chunk_len = os.getenv("DIFY_CHUNK_LENGTH")
+        chunk_overlap = os.getenv("DIFY_CHUNK_OVERLAP")
+        
+        if chunk_len and chunk_overlap:
+            process_rule = {
+                "mode": "custom",
+                "rules": {
+                    "chunk_length": int(chunk_len),
+                    "chunk_overlap": int(chunk_overlap)
+                }
+            }
+        else:
+            process_rule = {"mode": "automatic"}
+
         payload = {
             "name": title,
             "text": txt,
             "indexing_technique": "high_quality",
-            "process_rule": {
-                "mode": "automatic"
-            },
+            "process_rule": process_rule,
             "doc_form": "text_model",
             "doc_language": "Vietnamese",
         }
@@ -46,12 +87,23 @@ class DifyClient:
             print(f"Response body: {e.response.text}")
             raise
 
-async def sync_single_space(c_client, d_client, s_key, d_id, sem):
+    async def delete_document(self, dataset_id: str, document_id: str):
+        endpoint = f"/datasets/{dataset_id}/documents/{document_id}"
+        try:
+            resp = await self._client.delete(endpoint)
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.HTTPStatusError as e:
+            print(f"Dify API error during delete: {e.response.status_code}")
+            raise
+
+async def sync_single_space(c_client, d_client, s_key, d_id, sem, state_manager):
     try:
         print(f"--- Syncing space: {s_key} ---")
         pages = await c_client.get_all_pages_paginated(s_key)
         print(f"Found {len(pages)} pages in {s_key}.")
         for p in pages:
+            p_id = p.get("id")
             p_data = await process_page(c_client, p, s_key, True, sem)
             t = p_data["title"]
             c_txt = p_data["content"]
@@ -60,8 +112,19 @@ async def sync_single_space(c_client, d_client, s_key, d_id, sem):
                 for a in p_data["attachments"]:
                     att_txt += f"**{a['filename']}**:\n{a['content']}\n\n"
                 c_txt += att_txt
+            
             try:
-                await d_client.create_document_from_text(d_id, c_txt, t)
+                # Prevent duplicates: check if page was already synced
+                existing_doc_id = state_manager.get_document_id(p_id)
+                if existing_doc_id:
+                    await d_client.delete_document(d_id, existing_doc_id)
+                    print(f"Removed old version of page: {t}")
+
+                result = await d_client.create_document_from_text(d_id, c_txt, t)
+                new_doc_id = result.get("document", {}).get("id")
+                if new_doc_id:
+                    state_manager.update_document_id(p_id, new_doc_id)
+                
                 print(f"Synced page: {t}")
             except Exception as e:
                 print(f"Failed to sync page {t}: {e}")
@@ -82,11 +145,12 @@ async def main():
         return
     c_client = ConfluenceClient(base_url=c_url, api_token=c_tok, verify_ssl=v_ssl)
     d_client = DifyClient(base_url=d_url, api_key=d_key)
+    state_manager = SyncStateManager()
     sem = asyncio.Semaphore(10)
     try:
         if t_s_key:
             print(f"Targeted sync mode: space {t_s_key}")
-            await sync_single_space(c_client, d_client, t_s_key, d_id, sem)
+            await sync_single_space(c_client, d_client, t_s_key, d_id, sem, state_manager)
         else:
             print("Full system sync mode: Crawling all spaces...")
             spaces = await c_client.list_spaces()
@@ -101,7 +165,7 @@ async def main():
                     sk = s
                 
                 if sk:
-                    await sync_single_space(c_client, d_client, sk, d_id, sem)
+                    await sync_single_space(c_client, d_client, sk, d_id, sem, state_manager)
         print("\nAll sync tasks completed successfully.")
     finally:
         await c_client.close()
