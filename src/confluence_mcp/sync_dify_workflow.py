@@ -64,22 +64,24 @@ async def sync_single_space(c_client, d_client, s_key, sem):
         for p in pages:
             p_id = p.get("id")
             # Get attachments for this page
-            attachments = await c_client.get_attachments(p_id)
+            result = await c_client.get_page_attachments(p_id)
+            attachments = result.get("results", [])
             if not attachments:
                 continue
                 
             print(f"Page {p_id} has {len(attachments)} attachments. Processing...")
             
             for att in attachments:
-                filename = att.get("filename")
-                # We only want to process if we have a filename
-                if not filename:
+                filename = att.get("title") or att.get("filename")
+                download_path = att.get("_links", {}).get("download")
+                # We only want to process if we have a filename and a download path
+                if not filename or not download_path:
                     continue
                 
                 async with sem:
                     try:
                         # 1. Download from Confluence
-                        file_bytes = await c_client.download_attachment(p_id, att.get("id"))
+                        file_bytes = await c_client.download_attachment(download_path)
                         if not file_bytes:
                             print(f"Failed to download {filename}, skipping.")
                             continue
