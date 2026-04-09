@@ -6,6 +6,7 @@ from typing import Any, List, Dict
 import httpx
 from dotenv import load_dotenv
 from confluence_mcp.client import ConfluenceClient
+from confluence_mcp.extractor import FileExtractor
 
 load_dotenv()
 
@@ -91,12 +92,23 @@ async def sync_single_space(c_client, d_client, s_key, sem):
                             print(f"Failed to download {filename}, skipping.")
                             continue
                             
+                        # Convert .doc to Markdown if necessary
+                        current_filename = filename
+                        current_file_bytes = file_bytes
+                        
+                        if filename.lower().endswith(".doc"):
+                            print(f"Converting {filename} to markdown...")
+                            extracted_text = FileExtractor.extract(filename, file_bytes)
+                            current_filename = os.path.splitext(filename)[0] + ".md"
+                            current_file_bytes = extracted_text.encode("utf-8")
+                            print(f"Converted to {current_filename}")
+
                         # 2. Upload to Dify
-                        file_id = await d_client.upload_file(file_bytes, filename)
+                        file_id = await d_client.upload_file(current_file_bytes, current_filename)
                         
                         # 3. Run Workflow
-                        await d_client.run_workflow(filename, file_id)
-                        print(f"Successfully processed file: {filename}")
+                        await d_client.run_workflow(current_filename, file_id)
+                        print(f"Successfully processed file: {current_filename}")
                         
                     except Exception as e:
                         print(f"Error processing file {filename} on page {p_id}: {e}")
