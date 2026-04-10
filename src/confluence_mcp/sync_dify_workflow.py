@@ -140,7 +140,8 @@ async def sync_single_space(c_client, d_client, s_key, sem, stats):
                         print(f"Successfully processed file: {current_filename}")
                         
                         # Avoid overloading
-                        await asyncio.sleep(1)
+                        delay = float(os.getenv("SYNC_DELAY", "5"))
+                        await asyncio.sleep(delay)
                         
                     except Exception as e:
                         stats["failure"] += 1
@@ -174,8 +175,9 @@ async def main():
         
     c_client = ConfluenceClient(base_url=c_url, api_token=c_tok, verify_ssl=v_ssl)
     d_client = DifyWorkflowClient(base_url=d_url, api_key=d_key, user_id=d_user)
-    # Use a smaller semaphore for file uploads to avoid overloading Dify
-    sem = asyncio.Semaphore(3)
+    # Use a configurable semaphore to avoid overloading Dify/LLM
+    concurrency = int(os.getenv("SYNC_CONCURRENCY", "1"))
+    sem = asyncio.Semaphore(concurrency)
     
     try:
         if t_s_key:
