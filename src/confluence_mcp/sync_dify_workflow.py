@@ -2,6 +2,7 @@
 
 import os
 import asyncio
+import tempfile
 from typing import Any, List, Dict
 import httpx
 from dotenv import load_dotenv
@@ -24,18 +25,35 @@ class DifyWorkflowClient:
     async def close(self):
         await self._client.aclose()
 
-    async def upload_file(self, file_bytes: bytes, filename: str) -> str:
-        """Uploads a file to Dify and returns the file_id."""
+    async def upload_file(self, file_source: bytes | str, filename: str) -> str:
+        """Uploads a file to Dify and returns the file_id.
+        file_source can be bytes or a path to a file.
+        """
         endpoint = "/files/upload"
-        files = {"file": (filename, file_bytes)}
-        try:
-            resp = await self._client.post(endpoint, files=files)
-            resp.raise_for_status()
-            data = resp.json()
-            return data.get("id")
-        except httpx.HTTPStatusError as e:
-            print(f"Dify Upload error: {e.response.status_code} - {e.response.text}")
-            raise
+        
+        if isinstance(file_source, str):
+            # file_source is a path
+            with open(file_source, "rb") as f:
+                files = {"file": (filename, f)}
+                try:
+                    resp = await self._client.post(endpoint, files=files)
+                    resp.raise_for_status()
+                    data = resp.json()
+                    return data.get("id")
+                except httpx.HTTPStatusError as e:
+                    print(f"Dify Upload error: {e.response.status_code} - {e.response.text}")
+                    raise
+        else:
+            # file_source is bytes
+            files = {"file": (filename, file_source)}
+            try:
+                resp = await self._client.post(endpoint, files=files)
+                resp.raise_for_status()
+                data = resp.json()
+                return data.get("id")
+            except httpx.HTTPStatusError as e:
+                print(f"Dify Upload error: {e.response.status_code} - {e.response.text}")
+                raise
 
     async def run_workflow(self, filename: str, file_id: str):
         """Triggers the Dify Workflow with the uploaded file."""
@@ -61,7 +79,7 @@ class DifyWorkflowClient:
             print(f"Dify Workflow error: {e.response.status_code} - {e.response.text}")
             raise
 
-async def sync_single_space(c_client, d_client, s_key, sem):
+async def sync_single_space(c_client, d_client, s_key, sem, stats):
     try:
         print(f"--- Processing attachments in space: {s_key} ---")
         pages = await c_client.get_all_pages_paginated(s_key)
@@ -85,33 +103,55 @@ async def sync_single_space(c_client, d_client, s_key, sem):
                     continue
                 
                 async with sem:
+                    temp_file = None
+                    temp_md_file = None
                     try:
-                        # 1. Download from Confluence
-                        file_bytes = await c_client.download_attachment(download_path)
-                        if not file_bytes:
-                            print(f"Failed to download {filename}, skipping.")
-                            continue
-                            
+                        # 1. Download from Confluence to temp file
+                        fd, temp_file = tempfile.mkstemp()
+                        os.close(fd) # Close fd, we'll use the path
+                        
+                        await c_client.download_attachment(download_path, save_path=temp_file)
+                        
                         # Convert .doc to Markdown if necessary
                         current_filename = filename
-                        current_file_bytes = file_bytes
+                        current_source = temp_file
                         
                         if filename.lower().endswith(".doc"):
                             print(f"Converting {filename} to markdown...")
+                            with open(temp_file, "rb") as f:
+                                file_bytes = f.read()
                             extracted_text = FileExtractor.extract(filename, file_bytes)
+                            
                             current_filename = os.path.splitext(filename)[0] + ".md"
-                            current_file_bytes = extracted_text.encode("utf-8")
+                            fd_md, temp_md_file = tempfile.mkstemp(suffix=".md")
+                            os.close(fd_md)
+                            with open(temp_md_file, "w", encoding="utf-8") as f:
+                                f.write(extracted_text)
+                            
+                            current_source = temp_md_file
                             print(f"Converted to {current_filename}")
-
-                        # 2. Upload to Dify
-                        file_id = await d_client.upload_file(current_file_bytes, current_filename)
+                        
+                        # 2. Upload to Dify using streaming path
+                        file_id = await d_client.upload_file(current_source, current_filename)
                         
                         # 3. Run Workflow
                         await d_client.run_workflow(current_filename, file_id)
+                        stats["success"] += 1
                         print(f"Successfully processed file: {current_filename}")
                         
+                        # Avoid overloading
+                        await asyncio.sleep(1)
+                        
                     except Exception as e:
+                        stats["failure"] += 1
+                        ext = os.path.splitext(filename)[1]
+                        stats["failed_formats"].add(ext)
                         print(f"Error processing file {filename} on page {p_id}: {e}")
+                    finally:
+                        if temp_file and os.path.exists(temp_file):
+                            os.remove(temp_file)
+                        if temp_md_file and os.path.exists(temp_md_file):
+                            os.remove(temp_md_file)
                         
         print(f"Completed processing for space: {s_key}")
     except Exception as e:
@@ -126,6 +166,8 @@ async def main():
     d_user = os.getenv("DIFY_USER_ID", "confluence_sync_bot")
     t_s_key = os.getenv("SYNC_SPACE_KEY")
     
+    stats = {"success": 0, "failure": 0, "failed_formats": set()}
+    
     if not all([c_url, c_tok, d_key]):
         print("Error: Missing required env vars (CONFLUENCE_URL, CONFLUENCE_API_TOKEN, DIFY_WORKFLOW_API_KEY)")
         return
@@ -133,12 +175,12 @@ async def main():
     c_client = ConfluenceClient(base_url=c_url, api_token=c_tok, verify_ssl=v_ssl)
     d_client = DifyWorkflowClient(base_url=d_url, api_key=d_key, user_id=d_user)
     # Use a smaller semaphore for file uploads to avoid overloading Dify
-    sem = asyncio.Semaphore(5)
+    sem = asyncio.Semaphore(3)
     
     try:
         if t_s_key:
             print(f"Targeted sync mode: space {t_s_key}")
-            await sync_single_space(c_client, d_client, t_s_key, sem)
+            await sync_single_space(c_client, d_client, t_s_key, sem, stats)
         else:
             print("Full system sync mode: Crawling all spaces for attachments...")
             spaces = await c_client.list_spaces()
@@ -149,7 +191,14 @@ async def main():
             for s in spaces:
                 sk = s.get("key") if isinstance(s, dict) else s
                 if sk:
-                    await sync_single_space(c_client, d_client, sk, sem)
+                    await sync_single_space(c_client, d_client, sk, sem, stats)
+        
+        print("\n--- Sync Summary ---")
+        print(f"Successfully processed: {stats['success']} files")
+        print(f"Failed: {stats['failure']} files")
+        if stats['failed_formats']:
+            print(f"Failed formats: {', '.join(stats['failed_formats']) if stats['failed_formats'] else 'None'}")
+        print("-------------------\n")
         print("\nAll attachment sync tasks completed successfully.")
     finally:
         await c_client.close()

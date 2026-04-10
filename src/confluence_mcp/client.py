@@ -120,15 +120,24 @@ class ConfluenceClient:
         return all_pages
 
     async def download_attachment(
-        self, download_path: str, retries: int = 3
-    ) -> bytes:
-        """Download an attachment by its Confluence download path with retries and streaming."""
+        self, download_path: str, retries: int = 3, save_path: str | None = None
+    ) -> bytes | str:
+        """Download an attachment by its Confluence download path.
+        If save_path is provided, saves to disk and returns the path.
+        Otherwise, returns the content as bytes.
+        """
         client = await self._get_client()
         
         for attempt in range(retries):
             try:
                 async with client.stream("GET", download_path) as resp:
                     resp.raise_for_status()
+                    if save_path:
+                        with open(save_path, "wb") as f:
+                            async for chunk in resp.aiter_bytes():
+                                f.write(chunk)
+                        return save_path
+                    
                     content = bytearray()
                     async for chunk in resp.aiter_bytes():
                         content.extend(chunk)
