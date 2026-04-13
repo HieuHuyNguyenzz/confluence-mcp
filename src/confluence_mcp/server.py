@@ -45,6 +45,25 @@ def _get_confluence_client() -> ConfluenceClient:
 
 
 @mcp.tool()
+async def convert_file_to_markdown(file_path: str) -> str:
+    """Convert a local file (PDF, DOCX, XLSX, etc.) to Markdown.
+    
+    Args:
+        file_path: The absolute path to the file to convert.
+    """
+    try:
+        filename = os.path.basename(file_path)
+        with open(file_path, "rb") as f:
+            file_bytes = f.read()
+        
+        return FileExtractor.extract(filename, file_bytes)
+    except FileNotFoundError:
+        return f"[Error: File not found at {file_path}]"
+    except Exception as e:
+        return f"[Error converting file: {type(e).__name__}: {e}]"
+
+
+@mcp.tool()
 async def list_spaces(limit: int = 25, start: int = 0) -> list[dict[str, Any]]:
     """List all Confluence spaces accessible to the authenticated user."""
     client = _get_confluence_client()

@@ -140,7 +140,7 @@ async def sync_single_space(c_client, d_client, s_key, sem, stats):
                         print(f"Successfully processed file: {current_filename}")
                         
                         # Avoid overloading
-                        delay = float(os.getenv("SYNC_DELAY", "5"))
+                        delay = float(os.getenv("SYNC_DELAY", "120"))
                         await asyncio.sleep(delay)
                         
                     except Exception as e:
@@ -195,13 +195,21 @@ async def main():
                 if sk:
                     await sync_single_space(c_client, d_client, sk, sem, stats)
         
-        print("\n--- Sync Summary ---")
-        print(f"Successfully processed: {stats['success']} files")
-        print(f"Failed: {stats['failure']} files")
+        summary = []
+        summary.append("\n--- Sync Summary ---")
+        summary.append(f"Successfully processed: {stats['success']} files")
+        summary.append(f"Failed: {stats['failure']} files")
         if stats['failed_formats']:
-            print(f"Failed formats: {', '.join(stats['failed_formats']) if stats['failed_formats'] else 'None'}")
-        print("-------------------\n")
-        print("\nAll attachment sync tasks completed successfully.")
+            summary.append(f"Failed formats: {', '.join(stats['failed_formats']) if stats['failed_formats'] else 'None'}")
+        summary.append("-------------------\n")
+        summary.append("\nAll attachment sync tasks completed successfully.")
+        
+        summary_text = "\n".join(summary)
+        print(summary_text)
+        
+        with open("sync_summary.txt", "w", encoding="utf-8") as f:
+            f.write(summary_text)
+        print("\nSummary saved to sync_summary.txt")
     finally:
         await c_client.close()
         await d_client.close()
