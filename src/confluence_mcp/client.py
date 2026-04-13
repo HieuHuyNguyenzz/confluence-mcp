@@ -155,3 +155,28 @@ class ConfluenceClient:
             f"/rest/api/content/{page_id}/child/attachment",
             params={"limit": limit, "start": start},
         )
+
+    async def get_all_attachments_paginated(
+        self, page_id: str, batch_size: int = 100
+    ) -> list[dict[str, Any]]:
+        """Fetch ALL attachments for a page with automatic pagination."""
+        all_attachments: list[dict[str, Any]] = []
+        start = 0
+
+        while True:
+            result = await self.get_page_attachments(
+                page_id=page_id,
+                limit=batch_size,
+                start=start,
+            )
+            results = result.get("results", [])
+            all_attachments.extend(results)
+
+            size = result.get("size", 0)
+            total = result.get("totalSize", 0)
+
+            if start + size >= total:
+                break
+            start += size
+
+        return all_attachments

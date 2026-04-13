@@ -3,6 +3,8 @@
 import csv
 import io
 import json
+import zipfile
+import tarfile
 from typing import Any
 
 from bs4 import BeautifulSoup
@@ -57,6 +59,11 @@ class FileExtractor:
             "php": _extract_text,
             "sql": _extract_text,
             "css": _extract_text,
+            "zip": _extract_zip,
+            "rar": _extract_rar,
+            "7z": _extract_7z,
+            "tar": _extract_tar,
+            "gz": _extract_tar,
         }
 
         extractor = extractors.get(ext)
@@ -305,3 +312,77 @@ def _guess_media_type(ext: str) -> str:
         "iso": "application/x-iso9660-image",
     }
     return types.get(ext, "application/octet-stream")
+
+
+def _extract_zip(data: bytes) -> str:
+    """Extract content from ZIP archives."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            parts = []
+            for name in z.namelist():
+                if name.endswith("/"):
+                    continue
+                with z.open(name) as f:
+                    content_bytes = f.read()
+                    extracted = FileExtractor.extract(name, content_bytes)
+                    parts.append(f"### File: {name}\n\n{extracted}")
+            return "\n\n---\n\n".join(parts) if parts else "[ZIP archive is empty]"
+    except Exception as e:
+        return f"[Error extracting ZIP: {e}]"
+
+
+def _extract_tar(data: bytes) -> str:
+    """Extract content from TAR or TAR.GZ archives."""
+    try:
+        # tarfile.open handles .tar, .tar.gz, .tar.bz2, .tar.xz automatically
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:*") as t:
+            parts = []
+            for member in t.getmembers():
+                if member.isfile():
+                    f = t.extractfile(member)
+                    if f:
+                        content_bytes = f.read()
+                        extracted = FileExtractor.extract(member.name, content_bytes)
+                        parts.append(f"### File: {member.name}\n\n{extracted}")
+            return "\n\n---\n\n".join(parts) if parts else "[TAR archive is empty]"
+    except Exception as e:
+        return f"[Error extracting TAR: {e}]"
+
+
+def _extract_rar(data: bytes) -> str:
+    """Extract content from RAR archives."""
+    try:
+        import rarfile
+        with rarfile.RarFile(io.BytesIO(data)) as r:
+            parts = []
+            for name in r.namelist():
+                if name.endswith("/"):
+                    continue
+                with r.open(name) as f:
+                    content_bytes = f.read()
+                    extracted = FileExtractor.extract(name, content_bytes)
+                    parts.append(f"### File: {name}\n\n{extracted}")
+            return "\n\n---\n\n".join(parts) if parts else "[RAR archive is empty]"
+    except ImportError:
+        return "[Error: 'rarfile' library not installed. Please install it to extract RAR files.]"
+    except Exception as e:
+        return f"[Error extracting RAR: {e}]"
+
+
+def _extract_7z(data: bytes) -> str:
+    """Extract content from 7z archives."""
+    try:
+        import py7zr
+        with py7zr.SevenZipFile(io.BytesIO(data), mode='r') as z:
+            parts = []
+            # py7zr.SevenZipFile.readall() returns a dict {filename: Bio}
+            all_files = z.readall()
+            for name, bio in all_files.items():
+                content_bytes = bio.read()
+                extracted = FileExtractor.extract(name, content_bytes)
+                parts.append(f"### File: {name}\n\n{extracted}")
+            return "\n\n---\n\n".join(parts) if parts else "[7z archive is empty]"
+    except ImportError:
+        return "[Error: 'py7zr' library not installed. Please install it to extract 7z files.]"
+    except Exception as e:
+        return f"[Error extracting 7z: {e}]"

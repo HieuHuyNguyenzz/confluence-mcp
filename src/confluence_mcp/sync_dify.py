@@ -97,23 +97,23 @@ class DifyClient:
             print(f"Dify API error during delete: {e.response.status_code}")
             raise
 
-async def sync_single_space(c_client, d_client, s_key, d_id, sem, state_manager):
+async def sync_single_space(c_client, d_client, s_key, d_id, sem, state_manager, stats):
     try:
         print(f"--- Syncing space: {s_key} ---")
         pages = await c_client.get_all_pages_paginated(s_key)
         print(f"Found {len(pages)} pages in {s_key}.")
         for p in pages:
             p_id = p.get("id")
-            p_data = await process_page(c_client, p, s_key, True, sem)
-            t = p_data["title"]
-            c_txt = p_data["content"]
-            if p_data["attachments"]:
-                att_txt = "\n\n### Attachments\n"
-                for a in p_data["attachments"]:
-                    att_txt += f"**{a['filename']}**:\n{a['content']}\n\n"
-                c_txt += att_txt
-            
             try:
+                p_data = await process_page(c_client, p, s_key, True, sem)
+                t = p_data["title"]
+                c_txt = p_data["content"]
+                if p_data["attachments"]:
+                    att_txt = "\n\n### Attachments\n"
+                    for a in p_data["attachments"]:
+                        att_txt += f"**{a['filename']}**:\n{a['content']}\n\n"
+                    c_txt += att_txt
+                
                 # Prevent duplicates: check if page was already synced
                 existing_doc_id = state_manager.get_document_id(p_id)
                 if existing_doc_id:
@@ -126,8 +126,10 @@ async def sync_single_space(c_client, d_client, s_key, d_id, sem, state_manager)
                     state_manager.update_document_id(p_id, new_doc_id)
                 
                 print(f"Synced page: {t}")
+                stats["success"] += 1
             except Exception as e:
-                print(f"Failed to sync page {t}: {e}")
+                stats["failure"] += 1
+                print(f"Failed to sync page {p.get('title', p_id)}: {e}")
         print(f"Completed sync for space: {s_key}")
     except Exception as e:
         print(f"Critical error syncing space {s_key}: {e}")
@@ -147,10 +149,11 @@ async def main():
     d_client = DifyClient(base_url=d_url, api_key=d_key)
     state_manager = SyncStateManager()
     sem = asyncio.Semaphore(10)
+    stats = {"success": 0, "failure": 0}
     try:
         if t_s_key:
             print(f"Targeted sync mode: space {t_s_key}")
-            await sync_single_space(c_client, d_client, t_s_key, d_id, sem, state_manager)
+            await sync_single_space(c_client, d_client, t_s_key, d_id, sem, state_manager, stats)
         else:
             print("Full system sync mode: Crawling all spaces...")
             spaces = await c_client.list_spaces()
@@ -165,8 +168,21 @@ async def main():
                     sk = s
                 
                 if sk:
-                    await sync_single_space(c_client, d_client, sk, d_id, sem, state_manager)
-        print("\nAll sync tasks completed successfully.")
+                    await sync_single_space(c_client, d_client, sk, d_id, sem, state_manager, stats)
+        
+        summary = []
+        summary.append("\n--- Sync Summary (Knowledge Base) ---")
+        summary.append(f"Successfully processed: {stats['success']} pages")
+        summary.append(f"Failed: {stats['failure']} pages")
+        summary.append("------------------------------------\n")
+        summary.append("\nAll Knowledge Base sync tasks completed successfully.")
+        
+        summary_text = "\n".join(summary)
+        print(summary_text)
+        
+        with open("sync_summary_kb.txt", "w", encoding="utf-8") as f:
+            f.write(summary_text)
+        print("\nSummary saved to sync_summary_kb.txt")
     finally:
         await c_client.close()
         await d_client.close()

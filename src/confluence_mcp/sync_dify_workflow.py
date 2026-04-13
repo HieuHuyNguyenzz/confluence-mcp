@@ -88,8 +88,7 @@ async def sync_single_space(c_client, d_client, s_key, sem, stats):
         for p in pages:
             p_id = p.get("id")
             # Get attachments for this page
-            result = await c_client.get_page_attachments(p_id)
-            attachments = result.get("results", [])
+            attachments = await c_client.get_all_attachments_paginated(p_id)
             if not attachments:
                 continue
                 

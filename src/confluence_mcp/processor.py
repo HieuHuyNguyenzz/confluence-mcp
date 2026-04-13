@@ -12,9 +12,6 @@ def is_binary_type(media_type: str) -> bool:
         "image/",
         "video/",
         "audio/",
-        "application/zip",
-        "application/x-rar",
-        "application/x-7z",
         "application/x-tar",
         "application/gzip",
         "application/x-bzip2",
@@ -82,15 +79,13 @@ async def process_page(
         path = generate_page_path(full_page, space_key)
 
         attachments_info = []
-        attachments = full_page.get("children", {}).get("attachment", {}).get("results", [])
-
-        if attachments and include_attachments:
-            att_tasks = [
-                process_attachment(client, page_id, att, semaphore)
-                for att in attachments
-            ]
-            att_results = await asyncio.gather(*att_tasks)
-            attachments_info = [r for r in att_results if r is not None]
+        if include_attachments:
+            attachments = await client.get_all_attachments_paginated(page_id)
+            if attachments:
+                for att in attachments:
+                    res = await process_attachment(client, page_id, att, semaphore)
+                    if res is not None:
+                        attachments_info.append(res)
 
         version = full_page.get("version", {})
         history = full_page.get("history", {})
