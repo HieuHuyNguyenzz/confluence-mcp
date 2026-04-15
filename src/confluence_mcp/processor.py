@@ -38,9 +38,6 @@ async def process_attachment(
         media_type = att.get("extensions", {}).get("mediaType", "")
         file_size = att.get("extensions", {}).get("fileSize", 0)
 
-        if is_binary_type(media_type):
-            return None
-
         try:
             download_path = f"/download/attachments/{page_id}/{att_filename}"
             att_bytes = await client.download_attachment(download_path)
