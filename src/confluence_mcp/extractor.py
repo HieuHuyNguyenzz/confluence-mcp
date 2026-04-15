@@ -64,6 +64,9 @@ class FileExtractor:
             "7z": _extract_7z,
             "tar": _extract_tar,
             "gz": _extract_tar,
+            "xmind": _extract_xmind,
+            "drawio": _extract_drawio,
+            "msg": _extract_msg,
         }
 
         extractor = extractors.get(ext)
@@ -386,3 +389,199 @@ def _extract_7z(data: bytes) -> str:
         return "[Error: 'py7zr' library not installed. Please install it to extract 7z files.]"
     except Exception as e:
         return f"[Error extracting 7z: {e}]"
+
+
+def _extract_xmind(data: bytes) -> str:
+    """Extract content from XMind files as Markdown."""
+    try:
+        from xmindparser import xmind_to_dict
+
+        with open("/tmp/temp_xmind.xmind", "wb") as f:
+            f.write(data)
+
+        result = xmind_to_dict("/tmp/temp_xmind.xmind")
+        
+        import os
+        os.remove("/tmp/temp_xmind.xmind")
+
+        return _format_xmind_to_markdown(result)
+    except ImportError:
+        return "[Error: 'xmindparser' library not installed. Please install it to extract XMind files.]"
+    except Exception as e:
+        return f"[Error extracting XMind: {type(e).__name__}: {e}]"
+
+
+def _format_xmind_to_markdown(xmind_data: dict) -> str:
+    """Format XMind data to Markdown hierarchy."""
+    parts = []
+
+    def process_topic(topic: dict, level: int = 1) -> list:
+        lines = []
+        title = topic.get("title", "Untitled")
+        
+        heading = "#" * min(level, 6)
+        lines.append(f"{heading} {title}")
+        
+        notes = topic.get("notes", {})
+        if notes:
+            note_content = notes.get("plain", "")
+            if note_content:
+                lines.append(f"\n_{note_content}_")
+        
+        labels = topic.get("labels", [])
+        if labels:
+            lines.append(f"\nLabels: {', '.join(labels)}")
+        
+        topics = topic.get("topics", [])
+        if topics:
+            for subtopic in topics:
+                sub_lines = process_topic(subtopic, level + 1)
+                lines.extend(sub_lines)
+        
+        return lines
+
+    if isinstance(xmind_data, list):
+        for sheet in xmind_data:
+            sheet_title = sheet.get("title", "Sheet")
+            parts.append(f"## {sheet_title}\n")
+            
+            root_topic = sheet.get("topic", {})
+            if root_topic:
+                content = process_topic(root_topic, 2)
+                parts.extend(content)
+                
+            parts.append("")
+    elif isinstance(xmind_data, dict):
+        root_topic = xmind_data.get("topic", {})
+        if root_topic:
+            content = process_topic(root_topic, 1)
+            parts.extend(content)
+
+    return "\n".join(parts) if parts else "[Empty XMind file]"
+
+
+def _extract_drawio(data: bytes) -> str:
+    """Extract content from drawio XML files as Markdown."""
+    try:
+        text = data.decode("utf-8", errors="replace")
+        soup = BeautifulSoup(text, "xml")
+        
+        parts = []
+        parts.append("## Diagram")
+        
+        mxgraph = soup.find("mxfile")
+        if mxgraph:
+            diagram_title = mxgraph.get("name", "Untitled Diagram")
+            parts.append(f"**Name:** {diagram_title}\n")
+        
+        for diagram in soup.find_all("diagram"):
+            diagram_name = diagram.get("name", "")
+            if diagram_name:
+                parts.append(f"\n### {diagram_name}")
+            
+            diagram_xml = diagram.string or ""
+            if diagram_xml:
+                inner_soup = BeautifulSoup(diagram_xml, "xml")
+                
+                for cell in inner_soup.find_all("mxCell"):
+                    if cell.get("vertex") == "1":
+                        parent = cell.get("parent")
+                        style = cell.get("style", "")
+                        value = cell.get("value", "")
+                        
+                        if value and value != "":
+                            value_clean = BeautifulSoup(value, "html.parser").get_text()
+                            if "shape=" in style:
+                                if "rhombus" in style:
+                                    parts.append(f"- ◇ {value_clean}")
+                                elif "ellipse" in style:
+                                    parts.append(f"- ○ {value_clean}")
+                                elif "rect" in style or "rounded" in style:
+                                    parts.append(f"- □ {value_clean}")
+                                else:
+                                    parts.append(f"- {value_clean}")
+                            else:
+                                parts.append(f"- {value_clean}")
+                
+                for edge in inner_soup.find_all("mxCell"):
+                    if edge.get("edge") == "1":
+                        style = edge.get("style", "")
+                        value = edge.get("value", "")
+                        source = edge.get("source", "")
+                        target = edge.get("target", "")
+                        
+                        if value or source or target:
+                            label = value if value else "→"
+                            parts.append(f"- **{source}** → **{target}**: {label}")
+        
+        return "\n".join(parts) if parts else "[Empty drawio diagram]"
+    except Exception as e:
+        return f"[Error extracting drawio: {type(e).__name__}: {e}]"
+
+
+def _extract_msg(data: bytes) -> str:
+    """Extract content from Outlook .msg files as Markdown."""
+    try:
+        from extract_msg import Message
+
+        with open("/tmp/temp_msg.msg", "wb") as f:
+            f.write(data)
+
+        msg = Message("/tmp/temp_msg.msg")
+        
+        parts = []
+        
+        subject = msg.subject or "No Subject"
+        parts.append(f"## Email: {subject}\n")
+        
+        parts.append("**From:**")
+        sender = msg.sender or "Unknown"
+        parts.append(f"- {sender}")
+        
+        to_recipients = msg.to or ""
+        if to_recipients:
+            parts.append(f"\n**To:**")
+            for recipient in to_recipients.split(";"):
+                parts.append(f"- {recipient.strip()}")
+        
+        cc_recipients = msg.cc
+        if cc_recipients:
+            parts.append(f"\n**CC:**")
+            for recipient in cc_recipients.split(";"):
+                parts.append(f"- {recipient.strip()}")
+        
+        date = msg.date
+        if date:
+            parts.append(f"\n**Date:** {date}")
+        
+        body = msg.body
+        if body:
+            parts.append(f"\n---\n\n### Body\n\n{body}")
+        
+        html_body = msg.htmlBody
+        if html_body:
+            try:
+                html_soup = BeautifulSoup(html_body, "html.parser")
+                text_body = html_soup.get_text(separator="\n", strip=True)
+                if text_body and not body:
+                    parts.append(f"\n---\n\n### Body (HTML)\n\n{text_body}")
+            except:
+                pass
+        
+        attachments = msg.attachments
+        if attachments:
+            parts.append(f"\n### Attachments\n")
+            for att in attachments:
+                att_name = att.name if hasattr(att, 'name') else str(att)
+                parts.append(f"- {att_name}")
+        
+        msg.close()
+        
+        import os
+        os.remove("/tmp/temp_msg.msg")
+        
+        return "\n".join(parts)
+    except ImportError:
+        return "[Error: 'extract-msg' library not installed. Please install it to extract MSG files.]"
+    except Exception as e:
+        return f"[Error extracting MSG: {type(e).__name__}: {e}]"
