@@ -9,6 +9,9 @@ COPY src/ ./src/
 # Set Python path
 ENV PYTHONPATH=/app/src
 
+# Upgrade pip and install build dependencies first
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+
 # Install dependencies
 RUN pip install --no-cache-dir .
 
