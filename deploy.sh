@@ -14,6 +14,7 @@ DNS_SERVER="10.255.244.100"
 
 echo "Building Docker image: $IMAGE_NAME..."
 docker build \
+  --network host \
   --build-arg HTTP_PROXY="$HTTP_PROXY" \
   --build-arg HTTPS_PROXY="$HTTPS_PROXY" \
   --build-arg NO_PROXY="$NO_PROXY" \
