@@ -4,10 +4,7 @@ WORKDIR /app
 
 # Copy project files first
 COPY pyproject.toml .
-COPY src/ ./src/
-
-# Set Python path
-ENV PYTHONPATH=/app/src
+COPY src/confluence_mcp /app/confluence_mcp
 
 # Upgrade pip and install build dependencies first
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
