@@ -10,6 +10,7 @@ from typing import Any, List, Dict
 import httpx
 from dotenv import load_dotenv
 from langchain_experimental.text_splitters import SemanticChunker
+from langchain_openai import OpenAIEmbeddings
 from langchain.embeddings.base import Embeddings
 from pymilvus import connections, Collection, CollectionSchema, FieldSchema, DataType, utility
 
@@ -32,7 +33,14 @@ log = logging.getLogger(__name__)
 MILVUS_URL = os.getenv("MILVUS_URL", "http://localhost:19530")
 MILVUS_TOKEN = os.getenv("MILVUS_TOKEN")
 COLLECTION_NAME = os.getenv("MILVUS_COLLECTION", "confluence_knowledge")
+
+# Embedding API for Vector Storage
 EMBEDDING_URL = os.getenv("EMBEDDING_API_URL")
+
+# OpenAI Config for Semantic Chunking
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "text-embedding-3-small")
 
 # Semantic Chunking Config
 BREAKPOINT_THRESHOLD_TYPE = os.getenv("BREAKPOINT_THRESHOLD_TYPE", "percentile")
@@ -244,11 +252,17 @@ class CustomEmbeddings(Embeddings):
 class SemanticChunker:
     def __init__(
         self,
-        embedding_url: str,
+        openai_api_key: str,
+        openai_base_url: str,
+        openai_model: str,
         breakpoint_threshold_type: str = "percentile",
         breakpoint_threshold_amount: float = 0.50,
     ):
-        self.embeddings = CustomEmbeddings(url=embedding_url)
+        self.embeddings = OpenAIEmbeddings(
+            api_key=openai_api_key,
+            base_url=openai_base_url,
+            model=openai_model,
+        )
         self.breakpoint_threshold_type = breakpoint_threshold_type
         self.breakpoint_threshold_amount = breakpoint_threshold_amount
         self._splitter = None
@@ -274,11 +288,13 @@ def chunk_text(
     space_key: str,
     use_semantic: bool = True,
 ) -> List[Dict[str, Any]]:
-    if use_semantic and EMBEDDING_URL:
+    if use_semantic and OPENAI_API_KEY:
         log.info("Using Semantic Chunking for better context preservation...")
         try:
             splitter = SemanticChunker(
-                embedding_url=EMBEDDING_URL,
+                openai_api_key=OPENAI_API_KEY,
+                openai_base_url=OPENAI_BASE_URL,
+                openai_model=OPENAI_MODEL,
                 breakpoint_threshold_type=BREAKPOINT_THRESHOLD_TYPE,
                 breakpoint_threshold_amount=BREAKPOINT_THRESHOLD_AMOUNT,
             )

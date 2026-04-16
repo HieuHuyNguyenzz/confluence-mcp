@@ -18,6 +18,7 @@ dependencies = [
     "pymilvus",
     "langchain-text-splitters",
     "langchain-experimental",
+    "langchain-openai",
     "requests",
 ]
 
