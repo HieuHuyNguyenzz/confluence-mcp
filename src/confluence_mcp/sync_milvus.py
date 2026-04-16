@@ -28,8 +28,7 @@ log = logging.getLogger(__name__)
 
 # ─────────────────────────── CONFIG ────────────────────────────
 
-MILVUS_HOST = os.getenv("MILVUS_HOST", "localhost")
-MILVUS_PORT = os.getenv("MILVUS_PORT", "19530")
+MILVUS_URL = os.getenv("MILVUS_URL", "http://localhost:19530")
 MILVUS_TOKEN = os.getenv("MILVUS_TOKEN")
 COLLECTION_NAME = os.getenv("MILVUS_COLLECTION", "confluence_knowledge")
 EMBEDDING_URL = os.getenv("EMBEDDING_API_URL")
@@ -78,9 +77,8 @@ class SyncStateManager:
 # ─────────────────────────── MILVUS CLIENT ────────────────────────────
 
 class MilvusClient:
-    def __init__(self, host: str, port: str, collection_name: str, token: str = None):
-        self.host = host
-        self.port = port
+    def __init__(self, url: str, collection_name: str, token: str = None):
+        self.url = url
         self.token = token
         self.collection_name = collection_name
         self._dim = None
@@ -88,11 +86,11 @@ class MilvusClient:
 
     def _connect(self):
         if self.token:
-            connections.connect("default", host=self.host, port=self.port, token=self.token)
-            log.info(f"Connected to Milvus at {self.host}:{self.port} (with token)")
+            connections.connect("default", uri=self.url, token=self.token)
+            log.info(f"Connected to Milvus at {self.url} (with token)")
         else:
-            connections.connect("default", host=self.host, port=self.port)
-            log.info(f"Connected to Milvus at {self.host}:{self.port}")
+            connections.connect("default", uri=self.url)
+            log.info(f"Connected to Milvus at {self.url}")
 
     def set_dimension(self, dim: int):
         self._dim = dim
@@ -312,7 +310,7 @@ async def main():
         return
 
     c_client = ConfluenceClient(base_url=c_url, api_token=c_tok, verify_ssl=v_ssl)
-    m_client = MilvusClient(host=MILVUS_HOST, port=MILVUS_PORT, collection_name=COLLECTION_NAME, token=MILVUS_TOKEN)
+    m_client = MilvusClient(url=MILVUS_URL, collection_name=COLLECTION_NAME, token=MILVUS_TOKEN)
     e_client = EmbeddingClient(url=EMBEDDING_URL, batch_size=BATCH_SIZE)
     state_manager = SyncStateManager()
     
