@@ -14,7 +14,6 @@ from langchain.embeddings.base import Embeddings
 from pymilvus import connections, Collection, CollectionSchema, FieldSchema, DataType, utility
 
 from confluence_mcp.client import ConfluenceClient
-from confluence_mcp.processor import process_page
 
 load_dotenv()
 
@@ -330,9 +329,10 @@ class LLMChunker:
 
 async def chunk_text(
     text: str,
-    page_id: str,
+    unique_id: str,
     title: str,
     space_key: str,
+    source_type: str = "page",
     use_llm: bool = True,
 ) -> List[Dict[str, Any]]:
     if use_llm and OPENAI_API_KEY:
@@ -359,13 +359,18 @@ async def chunk_text(
             continue
             
         uid = hashlib.sha1(
-            f"{page_id}::{i}::{content[:80]}".encode()
+            f"{unique_id}::{i}::{content[:80]}".encode()
         ).hexdigest()[:16]
+        
+        if source_type == "attachment":
+            source_file = title
+        else:
+            source_file = f"{space_key}/{title}.md"
         
         chunk = {
             "id": uid,
             "content": content,
-            "source_file": f"{space_key}/{title}.md",
+            "source_file": source_file,
             "source_title": title,
             "group": space_key,
             "heading": "",
@@ -388,35 +393,75 @@ async def sync_single_space(c_client, m_client, e_client, s_key, sem, state_mana
                 
             async with sem:
                 try:
-                    # 1. Extraction
-                    p_data = await process_page(c_client, p, s_key, True, sem)
-                    title = p_data["title"]
-                    full_text = p_data["content"]
+                    # 1. Get page content
+                    page_title = p.get("title", "Untitled")
+                    full_page = await c_client.get_page(p_id)
+                    page_content = full_page.get("body", {}).get("view", {}).get("value", "")
                     
-                    if p_data["attachments"]:
-                        att_txt = "\n\n### Attachments\n"
-                        for a in p_data["attachments"]:
-                            att_txt += f"**{a['filename']}**:\n{a['content']}\n\n"
-                        full_text += att_txt
+                    # 2. Process page content -> Chunk -> Embed -> Save
+                    if page_content:
+                        page_chunks = await chunk_text(
+                            page_content, 
+                            f"{p_id}_page", 
+                            page_title, 
+                            s_key,
+                            source_type="page"
+                        )
+                        if page_chunks:
+                            embedded_chunks = await e_client.embed_chunks(page_chunks)
+                            if embedded_chunks:
+                                for i in range(0, len(embedded_chunks), 100):
+                                    batch = embedded_chunks[i:i + 100]
+                                    m_client.upload_batch(batch)
+                                stats["chunks"] += len(embedded_chunks)
                     
-                    # 2. Chunking
-                    chunks = await chunk_text(full_text, p_id, title, s_key)
-                    if not chunks:
-                        continue
-                    
-                    # 3. Batch Embedding
-                    embedded_chunks = await e_client.embed_chunks(chunks)
-                    
-                    # 4. Storage
-                    if embedded_chunks:
-                        for i in range(0, len(embedded_chunks), 100):
-                            batch = embedded_chunks[i:i + 100]
-                            m_client.upload_batch(batch)
+                    # 3. Process each attachment independently
+                    attachments = await c_client.get_all_attachments_paginated(p_id)
+                    if attachments:
+                        log.info(f"Processing {len(attachments)} attachments for page {page_title}...")
+                        for att in attachments:
+                            att_filename = att.get("title", "")
+                            att_download_path = att.get("_links", {}).get("download")
+                            
+                            if not att_filename or not att_download_path:
+                                continue
+                            
+                            async with sem:
+                                try:
+                                    # Download attachment
+                                    att_bytes = await c_client.download_attachment(att_download_path)
+                                    
+                                    # Extract text from file
+                                    from confluence_mcp.extractor import FileExtractor
+                                    att_text = FileExtractor.extract(att_filename, att_bytes)
+                                    
+                                    if not att_text or len(att_text.strip()) < 10:
+                                        continue
+                                    
+                                    # Process attachment content separately
+                                    att_chunks = await chunk_text(
+                                        att_text,
+                                        f"{p_id}_{att_filename}",
+                                        att_filename,
+                                        s_key,
+                                        source_type="attachment"
+                                    )
+                                    
+                                    if att_chunks:
+                                        embedded_att_chunks = await e_client.embed_chunks(att_chunks)
+                                        if embedded_att_chunks:
+                                            for i in range(0, len(embedded_att_chunks), 100):
+                                                batch = embedded_att_chunks[i:i + 100]
+                                                m_client.upload_batch(batch)
+                                            stats["chunks"] += len(embedded_att_chunks)
+                                            
+                                            log.info(f"Synced attachment: {att_filename}")
+                                except Exception as att_e:
+                                    log.warning(f"Failed to sync attachment {att_filename}: {att_e}")
                     
                     state_manager.mark_synced(p_id)
-                    log.info(f"Successfully synced page: {title} ({len(embedded_chunks)} chunks)")
+                    log.info(f"Successfully synced page: {page_title}")
                     stats["success"] += 1
-                    stats["chunks"] += len(embedded_chunks)
                     
                 except Exception as e:
                     stats["failure"] += 1
