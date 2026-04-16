@@ -9,7 +9,8 @@ import time
 from typing import Any, List, Dict
 import httpx
 from dotenv import load_dotenv
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_experimental.text_splitters import SemanticChunker
+from langchain_openai import OpenAIEmbeddings
 from pymilvus import connections, Collection, CollectionSchema, FieldSchema, DataType, utility
 
 from confluence_mcp.client import ConfluenceClient
@@ -32,6 +33,15 @@ MILVUS_URL = os.getenv("MILVUS_URL", "http://localhost:19530")
 MILVUS_TOKEN = os.getenv("MILVUS_TOKEN")
 COLLECTION_NAME = os.getenv("MILVUS_COLLECTION", "confluence_knowledge")
 EMBEDDING_URL = os.getenv("EMBEDDING_API_URL")
+
+# OpenAI Config for Semantic Chunking
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "text-embedding-3-small")
+
+# Semantic Chunking Config
+BREAKPOINT_THRESHOLD_TYPE = os.getenv("BREAKPOINT_THRESHOLD_TYPE", "percentile")
+BREAKPOINT_THRESHOLD_AMOUNT = float(os.getenv("BREAKPOINT_THRESHOLD_AMOUNT", "0.50"))
 
 # Batch embedding config
 BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "32"))
@@ -217,14 +227,62 @@ class EmbeddingClient:
 
 # ─────────────────────────── PIPELINE ────────────────────────────
 
-def chunk_text(text: str, page_id: str, title: str, space_key: str) -> List[Dict[str, Any]]:
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=900,
-        chunk_overlap=200,
-        separators=["\n\n", "\n", ".", " ", ""],
-    )
-    
-    splits = splitter.split_text(text)
+class SemanticChunker:
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str,
+        model: str,
+        breakpoint_threshold_type: str = "percentile",
+        breakpoint_threshold_amount: float = 0.50,
+    ):
+        self.embeddings = OpenAIEmbeddings(
+            api_key=api_key,
+            base_url=base_url,
+            model=model,
+        )
+        self.breakpoint_threshold_type = breakpoint_threshold_type
+        self.breakpoint_threshold_amount = breakpoint_threshold_amount
+        self._splitter = None
+
+    def _get_splitter(self):
+        if self._splitter is None:
+            self._splitter = SemanticChunker(
+                embeddings=self.embeddings,
+                breakpoint_threshold_type=self.breakpoint_threshold_type,
+                breakpoint_threshold_amount=self.breakpoint_threshold_amount,
+            )
+        return self._splitter
+
+    def chunk_text(self, text: str) -> List[str]:
+        splitter = self._get_splitter()
+        return splitter.split_text(text)
+
+
+def chunk_text(
+    text: str,
+    page_id: str,
+    title: str,
+    space_key: str,
+    use_semantic: bool = True,
+) -> List[Dict[str, Any]]:
+    if use_semantic and OPENAI_API_KEY:
+        log.info("Using Semantic Chunking for better context preservation...")
+        try:
+            splitter = SemanticChunker(
+                api_key=OPENAI_API_KEY,
+                base_url=OPENAI_BASE_URL,
+                model=OPENAI_MODEL,
+                breakpoint_threshold_type=BREAKPOINT_THRESHOLD_TYPE,
+                breakpoint_threshold_amount=BREAKPOINT_THRESHOLD_AMOUNT,
+            )
+            splits = splitter.chunk_text(text)
+            log.info(f"Semantic splitting produced {len(splits)} chunks")
+        except Exception as e:
+            log.warning(f"Semantic chunking failed: {e}, falling back to basic splitting")
+            splits = text.split("\n\n")
+    else:
+        splits = text.split("\n\n")
     
     chunks = []
     for i, content in enumerate(splits):
