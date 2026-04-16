@@ -6,8 +6,11 @@ WORKDIR /app
 COPY pyproject.toml .
 COPY src/ ./src/
 
+# Set Python path
+ENV PYTHONPATH=/app/src
+
 # Install dependencies
-RUN pip install --no-cache-dir -e .
+RUN pip install --no-cache-dir .
 
 # Expose port
 EXPOSE 8000
