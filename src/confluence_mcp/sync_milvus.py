@@ -9,8 +9,7 @@ import time
 from typing import Any, List, Dict
 import httpx
 from dotenv import load_dotenv
-from langchain_experimental.text_splitters import SemanticChunker
-from langchain_openai import OpenAIEmbeddings
+from langchain_openai import ChatOpenAI
 from langchain.embeddings.base import Embeddings
 from pymilvus import connections, Collection, CollectionSchema, FieldSchema, DataType, utility
 
@@ -37,14 +36,25 @@ COLLECTION_NAME = os.getenv("MILVUS_COLLECTION", "confluence_knowledge")
 # Embedding API for Vector Storage
 EMBEDDING_URL = os.getenv("EMBEDDING_API_URL")
 
-# OpenAI Config for Semantic Chunking
+# OpenAI Config for LLM Chunking
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "text-embedding-3-small")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
-# Semantic Chunking Config
-BREAKPOINT_THRESHOLD_TYPE = os.getenv("BREAKPOINT_THRESHOLD_TYPE", "percentile")
-BREAKPOINT_THRESHOLD_AMOUNT = float(os.getenv("BREAKPOINT_THRESHOLD_AMOUNT", "0.50"))
+# LLM Chunking Prompt
+LLM_CHUNKING_PROMPT = """Bạn là chuyên gia phân tích và xử lý tài liệu. Nhiệm vụ của bạn là chia văn bản dưới đây thành các đoạn nhỏ (chunks) theo ngữ nghĩa.
+
+NGUYÊN TẮC CHIA:
+1. Mỗi chunk phải là một đơn vị thông tin HOÀN CHỈNH về mặt ngữ nghĩa
+2. Không chia cắt giữa chừng một đoạn văn, danh sách, hoặc bảng
+3. Các tiêu đề phụ nên thuộc về chunk của phần nội dung theo sau nó
+4. Giới hạn mỗi chunk từ 200-1000 từ
+
+YÊU CẦU TRẢ LỜI:
+Trả về duy nhất một mảng JSON các chuỗi văn bản, không giải thích gì thêm.
+
+Văn bản cần chia:
+{text}"""
 
 # Batch embedding config
 BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "32"))
@@ -249,59 +259,92 @@ class CustomEmbeddings(Embeddings):
         return self.embed_documents([text])[0]
 
 
-class SemanticChunker:
+class LLMChunker:
     def __init__(
         self,
         openai_api_key: str,
         openai_base_url: str,
         openai_model: str,
-        breakpoint_threshold_type: str = "percentile",
-        breakpoint_threshold_amount: float = 0.50,
+        prompt: str,
+        max_chunk_size: int = 8000,
     ):
-        self.embeddings = OpenAIEmbeddings(
+        self.llm = ChatOpenAI(
             api_key=openai_api_key,
             base_url=openai_base_url,
             model=openai_model,
+            temperature=0,
         )
-        self.breakpoint_threshold_type = breakpoint_threshold_type
-        self.breakpoint_threshold_amount = breakpoint_threshold_amount
-        self._splitter = None
+        self.prompt = prompt
+        self.max_chunk_size = max_chunk_size
 
-    def _get_splitter(self):
-        if self._splitter is None:
-            self._splitter = SemanticChunker(
-                embeddings=self.embeddings,
-                breakpoint_threshold_type=self.breakpoint_threshold_type,
-                breakpoint_threshold_amount=self.breakpoint_threshold_amount,
-            )
-        return self._splitter
+    def _split_for_llm(self, text: str) -> List[str]:
+        if len(text) <= self.max_chunk_size:
+            return [text]
+        
+        splits = []
+        for i in range(0, len(text), self.max_chunk_size):
+            splits.append(text[i:i + self.max_chunk_size])
+        return splits
 
-    def chunk_text(self, text: str) -> List[str]:
-        splitter = self._get_splitter()
-        return splitter.split_text(text)
+    async def chunk_text(self, text: str) -> List[str]:
+        initial_splits = self._split_for_llm(text)
+        all_chunks = []
+        
+        for i, segment in enumerate(initial_splits):
+            prompt_with_text = self.prompt.format(text=segment)
+            
+            try:
+                response = await self.llm.abound(prompt_with_text)
+                content = response.content
+                
+                try:
+                    import json
+                    chunks = json.loads(content)
+                    if isinstance(chunks, list):
+                        all_chunks.extend(chunks)
+                    else:
+                        all_chunks.append(segment)
+                except json.JSONDecodeError:
+                    import re
+                    matches = re.findall(r'\[.*\]', content, re.DOTALL)
+                    if matches:
+                        try:
+                            chunks = json.loads(matches[0])
+                            all_chunks.extend(chunks)
+                        except:
+                            all_chunks.append(segment)
+                    else:
+                        all_chunks.append(segment)
+                        
+            except Exception as e:
+                log.warning(f"LLM chunking failed for segment {i}: {e}")
+                all_chunks.append(segment)
+            
+            await asyncio.sleep(0.2)
+        
+        return all_chunks
 
 
-def chunk_text(
+async def chunk_text(
     text: str,
     page_id: str,
     title: str,
     space_key: str,
-    use_semantic: bool = True,
+    use_llm: bool = True,
 ) -> List[Dict[str, Any]]:
-    if use_semantic and OPENAI_API_KEY:
-        log.info("Using Semantic Chunking for better context preservation...")
+    if use_llm and OPENAI_API_KEY:
+        log.info("Using LLM Chunking for better context preservation...")
         try:
-            splitter = SemanticChunker(
+            chunker = LLMChunker(
                 openai_api_key=OPENAI_API_KEY,
                 openai_base_url=OPENAI_BASE_URL,
                 openai_model=OPENAI_MODEL,
-                breakpoint_threshold_type=BREAKPOINT_THRESHOLD_TYPE,
-                breakpoint_threshold_amount=BREAKPOINT_THRESHOLD_AMOUNT,
+                prompt=LLM_CHUNKING_PROMPT,
             )
-            splits = splitter.chunk_text(text)
-            log.info(f"Semantic splitting produced {len(splits)} chunks")
+            splits = await chunker.chunk_text(text)
+            log.info(f"LLM chunking produced {len(splits)} chunks")
         except Exception as e:
-            log.warning(f"Semantic chunking failed: {e}, falling back to basic splitting")
+            log.warning(f"LLM chunking failed: {e}, falling back to basic splitting")
             splits = text.split("\n\n")
     else:
         splits = text.split("\n\n")
@@ -354,7 +397,7 @@ async def sync_single_space(c_client, m_client, e_client, s_key, sem, state_mana
                         full_text += att_txt
                     
                     # 2. Chunking
-                    chunks = chunk_text(full_text, p_id, title, s_key)
+                    chunks = await chunk_text(full_text, p_id, title, s_key)
                     if not chunks:
                         continue
                     
