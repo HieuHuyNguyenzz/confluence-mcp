@@ -30,6 +30,7 @@ log = logging.getLogger(__name__)
 
 MILVUS_HOST = os.getenv("MILVUS_HOST", "localhost")
 MILVUS_PORT = os.getenv("MILVUS_PORT", "19530")
+MILVUS_TOKEN = os.getenv("MILVUS_TOKEN")
 COLLECTION_NAME = os.getenv("MILVUS_COLLECTION", "confluence_knowledge")
 EMBEDDING_URL = os.getenv("EMBEDDING_API_URL")
 
@@ -77,16 +78,21 @@ class SyncStateManager:
 # ─────────────────────────── MILVUS CLIENT ────────────────────────────
 
 class MilvusClient:
-    def __init__(self, host: str, port: str, collection_name: str):
+    def __init__(self, host: str, port: str, collection_name: str, token: str = None):
         self.host = host
         self.port = port
+        self.token = token
         self.collection_name = collection_name
         self._dim = None
         self._connect()
 
     def _connect(self):
-        connections.connect("default", host=self.host, port=self.port)
-        log.info(f"Connected to Milvus at {self.host}:{self.port}")
+        if self.token:
+            connections.connect("default", host=self.host, port=self.port, token=self.token)
+            log.info(f"Connected to Milvus at {self.host}:{self.port} (with token)")
+        else:
+            connections.connect("default", host=self.host, port=self.port)
+            log.info(f"Connected to Milvus at {self.host}:{self.port}")
 
     def set_dimension(self, dim: int):
         self._dim = dim
@@ -306,7 +312,7 @@ async def main():
         return
 
     c_client = ConfluenceClient(base_url=c_url, api_token=c_tok, verify_ssl=v_ssl)
-    m_client = MilvusClient(host=MILVUS_HOST, port=MILVUS_PORT, collection_name=COLLECTION_NAME)
+    m_client = MilvusClient(host=MILVUS_HOST, port=MILVUS_PORT, collection_name=COLLECTION_NAME, token=MILVUS_TOKEN)
     e_client = EmbeddingClient(url=EMBEDDING_URL, batch_size=BATCH_SIZE)
     state_manager = SyncStateManager()
     
