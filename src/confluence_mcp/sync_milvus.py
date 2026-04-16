@@ -48,7 +48,7 @@ NGUYÊN TẮC CHIA:
 1. Mỗi chunk phải là một đơn vị thông tin HOÀN CHỈNH về mặt ngữ nghĩa
 2. Không chia cắt giữa chừng một đoạn văn, danh sách, hoặc bảng
 3. Các tiêu đề phụ nên thuộc về chunk của phần nội dung theo sau nó
-4. Giới hạn mỗi chunk từ 200-1000 từ
+4. Giới hạn mỗi chunk từ 100-200 từ
 
 YÊU CẦU TRẢ LỜI:
 Trả về duy nhất một mảng JSON các chuỗi văn bản, không giải thích gì thêm.
@@ -151,20 +151,23 @@ class MilvusClient:
         collection = Collection(self.collection_name)
         collection.load()
         
-        ids = [c["id"] for c in batch]
-        vectors = [c["embedding"] for c in batch]
-        scalar_data = {
-            "content": [c["content"][:65534] for c in batch],
-            "group": [c["group"] for c in batch],
-            "domain": [c["domain"] for c in batch],
-            "column_type": [c["column_type"] for c in batch],
-            "aggregation": [c["aggregation"] for c in batch],
-            "keywords": [c["keywords"] for c in batch],
-            "source_file": [c["source_file"] for c in batch],
-            "source_title": [c["source_title"] for c in batch],
-            "heading": [c["heading"] for c in batch],
-        }
-        collection.insert(ids=ids, vectors=vectors, scalar_data=scalar_data)
+        data = [
+            {
+                "id": c["id"],
+                "vector": c["embedding"],
+                "content": c["content"][:65534],
+                "group": c["group"],
+                "domain": c["domain"],
+                "column_type": c["column_type"],
+                "aggregation": c["aggregation"],
+                "keywords": c["keywords"],
+                "source_file": c["source_file"],
+                "source_title": c["source_title"],
+                "heading": c["heading"],
+            }
+            for c in batch
+        ]
+        collection.insert(data=data)
         collection.flush()
 
 # ─────────────────────────── EMBEDDING CLIENT ────────────────────────────
@@ -255,7 +258,7 @@ class CustomEmbeddings(Embeddings):
         resp.raise_for_status()
         return [item["embedding"] for item in resp.json()["data"]]
 
-    def embed_query(self, text: str) -> List[float]]:
+    def embed_query(self, text: str) -> List[float]:
         return self.embed_documents([text])[0]
 
 
