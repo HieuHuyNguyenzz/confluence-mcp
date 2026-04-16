@@ -10,7 +10,7 @@ from typing import Any, List, Dict
 import httpx
 from dotenv import load_dotenv
 from langchain_experimental.text_splitters import SemanticChunker
-from langchain_openai import OpenAIEmbeddings
+from langchain.embeddings.base import Embeddings
 from pymilvus import connections, Collection, CollectionSchema, FieldSchema, DataType, utility
 
 from confluence_mcp.client import ConfluenceClient
@@ -33,11 +33,6 @@ MILVUS_URL = os.getenv("MILVUS_URL", "http://localhost:19530")
 MILVUS_TOKEN = os.getenv("MILVUS_TOKEN")
 COLLECTION_NAME = os.getenv("MILVUS_COLLECTION", "confluence_knowledge")
 EMBEDDING_URL = os.getenv("EMBEDDING_API_URL")
-
-# OpenAI Config for Semantic Chunking
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "text-embedding-3-small")
 
 # Semantic Chunking Config
 BREAKPOINT_THRESHOLD_TYPE = os.getenv("BREAKPOINT_THRESHOLD_TYPE", "percentile")
@@ -227,20 +222,33 @@ class EmbeddingClient:
 
 # ─────────────────────────── PIPELINE ────────────────────────────
 
+class CustomEmbeddings(Embeddings):
+    def __init__(self, url: str):
+        self.url = url
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        import requests
+        resp = requests.post(
+            self.url,
+            json={"input": texts},
+            headers={"Content-Type": "application/json"},
+            timeout=60,
+        )
+        resp.raise_for_status()
+        return [item["embedding"] for item in resp.json()["data"]]
+
+    def embed_query(self, text: str) -> List[float]]:
+        return self.embed_documents([text])[0]
+
+
 class SemanticChunker:
     def __init__(
         self,
-        api_key: str,
-        base_url: str,
-        model: str,
+        embedding_url: str,
         breakpoint_threshold_type: str = "percentile",
         breakpoint_threshold_amount: float = 0.50,
     ):
-        self.embeddings = OpenAIEmbeddings(
-            api_key=api_key,
-            base_url=base_url,
-            model=model,
-        )
+        self.embeddings = CustomEmbeddings(url=embedding_url)
         self.breakpoint_threshold_type = breakpoint_threshold_type
         self.breakpoint_threshold_amount = breakpoint_threshold_amount
         self._splitter = None
@@ -266,13 +274,11 @@ def chunk_text(
     space_key: str,
     use_semantic: bool = True,
 ) -> List[Dict[str, Any]]:
-    if use_semantic and OPENAI_API_KEY:
+    if use_semantic and EMBEDDING_URL:
         log.info("Using Semantic Chunking for better context preservation...")
         try:
             splitter = SemanticChunker(
-                api_key=OPENAI_API_KEY,
-                base_url=OPENAI_BASE_URL,
-                model=OPENAI_MODEL,
+                embedding_url=EMBEDDING_URL,
                 breakpoint_threshold_type=BREAKPOINT_THRESHOLD_TYPE,
                 breakpoint_threshold_amount=BREAKPOINT_THRESHOLD_AMOUNT,
             )

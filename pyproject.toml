@@ -17,7 +17,6 @@ dependencies = [
     "extract-msg>=0.55",
     "pymilvus",
     "langchain-text-splitters",
-    "langchain-openai",
     "langchain-experimental",
     "requests",
 ]
