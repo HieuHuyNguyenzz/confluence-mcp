@@ -137,7 +137,7 @@ def _extract_xlsx(data: bytes) -> str:
     """Extract content from .xlsx files as Markdown tables."""
     from openpyxl import load_workbook
 
-    wb = load_workbook(read_only=True, data_only=True)
+    wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
     sheets = []
 
     for sheet_name in wb.sheetnames:
