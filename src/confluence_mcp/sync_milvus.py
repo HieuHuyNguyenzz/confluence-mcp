@@ -102,6 +102,26 @@ Kết quả phải được xuất theo định dạng **JSON** như sau:
 Văn bản cần chunk:
 {text}"""
 
+LLM_SUMMARY_PROMPT = """# Role:
+Bạn là một chuyên gia phân tích tài liệu cấp cao.
+
+### Nhiệm vụ:
+Hãy tạo một bản tóm tắt cô đọng và toàn diện cho tài liệu dưới đây. Bản tóm tắt này sẽ được dùng làm "ngữ cảnh toàn cục" (global context) để hỗ trợ hệ thống Vector Search tìm kiếm chính xác hơn.
+
+### Yêu cầu nội dung:
+1. **Mục đích chính**: Tài liệu này viết về cái gì? Giải quyết vấn đề gì?
+2. **Các thực thể chính**: Liệt kê các khái niệm, thuật ngữ, sản phẩm hoặc quy trình then chốt xuất hiện trong tài liệu.
+3. **Cấu trúc logic**: Mô tả ngắn gọn luồng thông tin của tài liệu.
+4. **Phong cách**: Viết súc tích, khách quan, không dùng từ ngữ thừa.
+
+### Giới hạn:
+- Độ dài: 100-200 từ.
+- Ngôn ngữ: Tiếng Việt.
+- Không chào hỏi, không giải thích, chỉ trả về nội dung bản tóm tắt.
+
+Văn bản cần tóm tắt:
+{text}"""
+
 # Batch embedding config
 BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "32"))
 
@@ -171,7 +191,7 @@ class MilvusClient:
         if utility.has_collection(self.collection_name):
             log.info(f"Dropping existing collection '{self.collection_name}'...")
             utility.drop_collection(self.collection_name)
-
+        
         fields = [
             FieldSchema(name="id", dtype=DataType.VARCHAR, max_length=64, is_primary=True),
             FieldSchema(name="vector", dtype=DataType.FLOAT_VECTOR, dim=self._dim),
@@ -184,6 +204,7 @@ class MilvusClient:
             FieldSchema(name="source_file", dtype=DataType.VARCHAR, max_length=500),
             FieldSchema(name="source_title", dtype=DataType.VARCHAR, max_length=500),
             FieldSchema(name="heading", dtype=DataType.VARCHAR, max_length=1000),
+            FieldSchema(name="global_context", dtype=DataType.VARCHAR, max_length=5000),
         ]
         schema = CollectionSchema(fields, description="Confluence Knowledge Base")
         collection = Collection(name=self.collection_name, schema=schema)
@@ -210,6 +231,7 @@ class MilvusClient:
                 "source_file": c["source_file"],
                 "source_title": c["source_title"],
                 "heading": c["heading"],
+                "global_context": c.get("global_context", ""),
             }
             for c in batch
         ]
@@ -326,6 +348,29 @@ class LLMChunker:
         self.prompt = prompt
         self.max_chunk_size = max_chunk_size
 
+    async def generate_document_summary(self, text: str) -> str:
+        """Generate a global summary for the entire document to be used as context for chunks."""
+        # Safe limit for a single LLM call to avoid hitting context window limits 
+        # although model limit is 64k, we keep it reasonable
+        limit = 100000 
+        if len(text) > limit:
+            log.info(f"Document too large ({len(text)} chars), summarizing in parts...")
+            # Simplified recursive summarization: split into 2 parts, summarize each, then summarize result
+            mid = len(text) // 2
+            part1 = await self.generate_document_summary(text[:mid])
+            part2 = await self.generate_document_summary(text[mid:])
+            text = f"Part 1 Summary:\n{part1}\n\nPart 2 Summary:\n{part2}"
+        
+        try:
+            prompt = LLM_SUMMARY_PROMPT.replace("{text}", text)
+            response = await self.llm.ainvoke(prompt)
+            summary = response.content.strip()
+            log.info("Successfully generated global document summary.")
+            return summary
+        except Exception as e:
+            log.warning(f"Failed to generate global summary: {e}")
+            return ""
+
     def _parse_json_response(self, content: str) -> Any:
         """Robustly extract JSON from LLM response."""
         import json
@@ -362,7 +407,7 @@ class LLMChunker:
             splits.append(text[i:i + self.max_chunk_size])
         return splits
 
-    async def chunk_text(self, text: str) -> List[Dict[str, Any]]:
+    async def chunk_text(self, text: str, global_summary: str = "") -> List[Dict[str, Any]]:
         initial_splits = self._split_for_llm(text)
         all_chunks = []
         
@@ -379,11 +424,24 @@ class LLMChunker:
                     if isinstance(data, dict) and "chunks" in data:
                         chunks = data["chunks"]
                         if isinstance(chunks, list):
-                            all_chunks.extend(chunks)
+                            for c in chunks:
+                                if isinstance(c, dict):
+                                    # Enrich the content with global summary
+                                    original_content = c.get("content", "")
+                                    c["content"] = f"--- GLOBAL CONTEXT ---\n{global_summary}\n\n--- CONTENT ---\n{original_content}"
+                                    all_chunks.append(c)
+                                else:
+                                    all_chunks.append({"content": segment, "keywords": []})
                         else:
                             all_chunks.append({"content": segment, "keywords": []})
                     elif isinstance(data, list):
-                        all_chunks.extend(data)
+                        for c in data:
+                            if isinstance(c, dict):
+                                original_content = c.get("content", "")
+                                c["content"] = f"--- GLOBAL CONTEXT ---\n{global_summary}\n\n--- CONTENT ---\n{original_content}"
+                                all_chunks.append(c)
+                            else:
+                                all_chunks.append({"content": segment, "keywords": []})
                     else:
                         all_chunks.append({"content": segment, "keywords": []})
                 else:
@@ -404,6 +462,7 @@ async def chunk_text(
     unique_id: str,
     title: str,
     space_key: str,
+    global_summary: str = "",
     source_type: str = "page",
     use_llm: bool = True,
 ) -> List[Dict[str, Any]]:
@@ -416,7 +475,7 @@ async def chunk_text(
                 openai_model=OPENAI_MODEL,
                 prompt=LLM_CHUNKING_PROMPT,
             )
-            splits = await chunker.chunk_text(text)
+            splits = await chunker.chunk_text(text, global_summary=global_summary)
             log.info(f"LLM chunking produced {len(splits)} chunks")
         except Exception as e:
             log.warning(f"LLM chunking failed: {e}, falling back to basic splitting")
@@ -453,7 +512,8 @@ async def chunk_text(
             "group": space_key,
             "heading": "",
             **DEFAULT_METADATA,
-            "keywords": keywords if keywords else DEFAULT_METADATA.get("keywords", "")
+            "keywords": keywords if keywords else DEFAULT_METADATA.get("keywords", ""),
+            "global_context": global_summary
         }
         chunks.append(chunk)
     return chunks
@@ -463,6 +523,14 @@ async def sync_single_space(c_client, m_client, e_client, s_key, sem, state_mana
         log.info(f"--- Syncing attachments in space: {s_key} ---")
         pages = await c_client.get_all_pages_paginated(s_key)
         log.info(f"Found {len(pages)} pages in {s_key} to check for attachments.")
+        
+        # Initialize LLMChunker once per space
+        chunker = LLMChunker(
+            openai_api_key=OPENAI_API_KEY,
+            openai_base_url=OPENAI_BASE_URL,
+            openai_model=OPENAI_MODEL,
+            prompt=LLM_CHUNKING_PROMPT,
+        )
         
         for p in pages:
             p_id = p.get("id")
@@ -495,12 +563,16 @@ async def sync_single_space(c_client, m_client, e_client, s_key, sem, state_mana
                             if not att_text or len(att_text.strip()) < 10:
                                 continue
                             
-                            # 3. Process attachment content: Chunk -> Embed -> Save
+                            # 3. Generate Global Summary for the attachment
+                            global_summary = await chunker.generate_document_summary(att_text)
+                            
+                            # 4. Process attachment content: Chunk -> Embed -> Save
                             att_chunks = await chunk_text(
                                 att_text,
                                 f"{p_id}_{att_filename}",
                                 att_filename,
                                 s_key,
+                                global_summary=global_summary,
                                 source_type="attachment"
                             )
                             
