@@ -326,6 +326,33 @@ class LLMChunker:
         self.prompt = prompt
         self.max_chunk_size = max_chunk_size
 
+    def _parse_json_response(self, content: str) -> Any:
+        """Robustly extract JSON from LLM response."""
+        import json
+        import re
+        
+        # 1. Remove markdown code blocks if present
+        content = re.sub(r'```json\s*', '', content)
+        content = re.sub(r'```\s*$', '', content)
+        content = content.strip()
+        
+        # 2. Try direct load
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError:
+            pass
+            
+        # 3. Try extracting content between first { and last }
+        try:
+            start = content.find('{')
+            end = content.rfind('}')
+            if start != -1 and end != -1 and end > start:
+                return json.loads(content[start:end+1])
+        except json.JSONDecodeError:
+            pass
+            
+        return None
+
     def _split_for_llm(self, text: str) -> List[str]:
         if len(text) <= self.max_chunk_size:
             return [text]
@@ -346,29 +373,22 @@ class LLMChunker:
                 response = await self.llm.ainvoke(prompt_with_text)
                 content = response.content
                 
-                try:
-                    import json
-                    data = json.loads(content)
+                data = self._parse_json_response(content)
+                
+                if data is not None:
                     if isinstance(data, dict) and "chunks" in data:
-                        all_chunks.extend(data["chunks"])
+                        chunks = data["chunks"]
+                        if isinstance(chunks, list):
+                            all_chunks.extend(chunks)
+                        else:
+                            all_chunks.append({"content": segment, "keywords": []})
                     elif isinstance(data, list):
                         all_chunks.extend(data)
                     else:
                         all_chunks.append({"content": segment, "keywords": []})
-                except json.JSONDecodeError:
-                    import re
-                    matches = re.findall(r'\{.*\}', content, re.DOTALL)
-                    if matches:
-                        try:
-                            data = json.loads(matches[0])
-                            if isinstance(data, dict) and "chunks" in data:
-                                all_chunks.extend(data["chunks"])
-                            else:
-                                all_chunks.append({"content": segment, "keywords": []})
-                        except:
-                            all_chunks.append({"content": segment, "keywords": []})
-                    else:
-                        all_chunks.append({"content": segment, "keywords": []})
+                else:
+                    log.warning(f"LLM returned non-JSON content for segment {i}. Content: {content[:200]}...")
+                    all_chunks.append({"content": segment, "keywords": []})
                         
             except Exception as e:
                 log.warning(f"LLM chunking failed for segment {i}: {e}")
