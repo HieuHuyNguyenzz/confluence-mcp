@@ -367,7 +367,7 @@ class LLMChunker:
         all_chunks = []
         
         for i, segment in enumerate(initial_splits):
-            prompt_with_text = self.prompt.format(text=segment)
+            prompt_with_text = self.prompt.replace("{text}", segment)
             
             try:
                 response = await self.llm.ainvoke(prompt_with_text)
