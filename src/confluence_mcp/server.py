@@ -14,8 +14,11 @@ from confluence_mcp.converter import (
 )
 from confluence_mcp.extractor import FileExtractor
 from confluence_mcp.processor import process_page, process_attachment, is_binary_type
+from confluence_mcp.sync_milvus import MilvusClient, EmbeddingClient
 
 load_dotenv()
+
+MAX_CONCURRENT_REQUESTS = 10
 
 MAX_CONCURRENT_REQUESTS = 10
 
@@ -42,6 +45,89 @@ def _get_confluence_client() -> ConfluenceClient:
         api_token=api_token,
         verify_ssl=verify_ssl,
     )
+
+
+async def _get_knowledge_clients():
+    """Create Milvus and Embedding clients from environment variables."""
+    milvus_url = os.getenv("MILVUS_URL", "http://localhost:19530")
+    milvus_token = os.getenv("MILVUS_TOKEN")
+    milvus_coll = os.getenv("MILVUS_COLLECTION", "confluence_knowledge")
+    embedding_url = os.getenv("EMBEDDING_API_URL")
+    
+    if not embedding_url:
+        raise ValueError("Missing EMBEDDING_API_URL in .env file.")
+        
+    m_client = MilvusClient(url=milvus_url, collection_name=milvus_coll, token=milvus_token)
+    e_client = EmbeddingClient(url=embedding_url)
+    
+    return m_client, e_client
+
+@mcp.tool()
+async def search_knowledge(query: str, top_k: int = 5) -> str:
+    """Search the Confluence knowledge base using vector search.
+    
+    Returns the most relevant context retrieved from the hierarchical knowledge base.
+    
+    Args:
+        query: The search query.
+        top_k: Number of relevant chunks to retrieve.
+    """
+    m_client, e_client = await _get_knowledge_clients()
+    try:
+        # 1. Embed the query
+        query_vector = (await e_client._get_embedding([query]))[0]
+        
+        # 2. Search for top-k CHILD chunks
+        collection = m_client.Collection(m_client.collection_name)
+        collection.load()
+        
+        search_params = {"metric_type": "L2", "params": {"nprobe": 10}}
+        results = collection.search(
+            data=[query_vector],
+            anns_field="vector",
+            param=search_params,
+            limit=top_k,
+            output_fields=["parent_id", "content", "chunk_type"]
+        )
+        
+        if not results or not results[0]:
+            return "No relevant information found in the knowledge base."
+            
+        # 3. Fetch Parent context for each child
+        parent_ids = set()
+        for hit in results[0]:
+            p_id = hit.entity.get("parent_id")
+            if p_id:
+                parent_ids.add(p_id)
+            else:
+                # If it's a parent chunk itself or has no parent, use its own content
+                parent_ids.add(hit.id)
+        
+        # 4. Retrieve Parent contents
+        # Milvus doesn't have a simple 'get by IDs' for a list of IDs in one call 
+        # without a filter expression.
+        filter_expr = f"id in {tuple(parent_ids)}" if len(parent_ids) > 1 else f"id == '{list(parent_ids)[0]}'" if parent_ids else "id == ''"
+        
+        if not parent_ids:
+            return "No relevant context could be retrieved."
+            
+        parents = collection.query(
+            expr=filter_expr,
+            output_fields=["content", "source_title"]
+        )
+        
+        context_blocks = []
+        for p in parents:
+            title = p.get("source_title", "Unknown Source")
+            content = p.get("content", "")
+            context_blocks.append(f"--- Source: {title} ---\n{content}")
+            
+        return "\n\n".join(context_blocks)
+        
+    except Exception as e:
+        return f"[Error searching knowledge base: {type(e).__name__}: {e}]"
+    finally:
+        await e_client.close()
 
 
 @mcp.tool()

@@ -41,86 +41,57 @@ OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 # LLM Chunking Prompt
-LLM_CHUNKING_PROMPT = """Reasoning: low
-
-# Role:
-Bạn là một hệ thống **chunking văn bản thông minh**.
+LLM_CHUNKING_PROMPT = \"\"\"Bạn là một hệ thống chunking văn bản thông minh chuyên dụng cho RAG.
 
 ### Nhiệm vụ:
-Nhận đầu vào là **một văn bản dài** và chia nhỏ nó thành các đoạn (**chunk**) theo các quy tắc sau:
-
----
+Nhận đầu vào là một văn bản và chia nó thành các đoạn (chunks) nhỏ sao cho mỗi chunk giữ được ý nghĩa trọn vẹn và có ngữ cảnh rõ ràng.
 
 ### Quy tắc chia chunk:
-1. **Độ dài mỗi chunk**: từ **100–200 từ** (có thể điều chỉnh tùy nhu cầu).
-2. **Không cắt giữa câu** — luôn giữ nguyên các câu đầy đủ.
-3. **Giữ cấu trúc logic**:
-   - Nếu văn bản có **các tiêu đề, mục, hoặc đoạn rõ ràng** (`#`, `##`, `###`), hãy ưu tiên chia theo các phần đó.
-   - Một **tiêu đề** và **nội dung liên quan** phải nằm cùng trong một chunk (trừ khi vượt quá giới hạn từ).
-4. Nếu văn bản **ngắn hơn giới hạn chunk**, hãy giữ nguyên.
-5. **Giữ nguyên các ký tự định dạng tiêu đề** như `#`, `##`, `###`.
-6. **Xóa các ký tự vô nghĩa** (như khoảng trắng thừa, ký tự đặc biệt không cần thiết).
-7. Nếu có **bảng, danh sách hoặc dữ liệu dạng bảng**, hãy đưa nguyên bảng vào **một chunk riêng biệt**.
-8. **Không thay đổi, thêm, hoặc bỏ nội dung gốc**, trừ việc chia nhỏ theo quy tắc trên.
+1. **Độ dài**: Mỗi chunk khoảng 100-300 từ.
+2. **Tính toàn vẹn**: Không cắt giữa câu. Luôn giữ nguyên các câu đầy đủ.
+3. **Cấu trúc**: Ưu tiên chia theo tiêu đề (#, ##, ###) hoặc đoạn văn rõ ràng.
+4. **Định dạng**: Giữ nguyên các ký tự định dạng tiêu đề. 
+5. **Nội dung**: Không thay đổi, thêm, hoặc bỏ nội dung gốc.
+6. **Làm giàu**: 
+   - Mỗi chunk phải có 5-10 từ khóa quan trọng.
+   - Cuối mỗi chunk, thêm một câu tóm tắt ngữ cảnh ngắn (Bắt đầu bằng: "Đoạn này...").
 
----
+### 🧩 Định dạng đầu ra (JSON):
+Bạn PHẢI trả về kết quả dưới định dạng JSON thuần túy, bắt đầu bằng `{` và kết thúc bằng `}`. Không thêm lời dẫn hoặc markdown block.
 
-### 🧩 Cấu trúc đầu ra:
-Kết quả phải được xuất theo định dạng **JSON** như sau:
-```json
-{
-  "chunks": [
-    {
-      "content": "Title + '\\n' + đoạn văn bản + '\\n' + context",
-      "keywords": ["keyword1", "keyword2", "keyword3", "keyword4", "keyword5"]
-    },
-    {
-      "content": "Title + '\\n' + đoạn văn bản + '\\n' + context",
-      "keywords": ["keywordA", "keywordB", "keywordC", "keywordD", "keywordE"]
-    }
+Ví dụ:
+Input: \"# Hướng dẫn cài đặt\\nBước 1: Tải file. Bước 2: Chạy installer. Bước 3: Cấu hình IP.\"
+Output:
+{{
+  \"chunks\": [
+    {{
+      \"content\": \"# Hướng dẫn cài đặt\\nBước 1: Tải file. Bước 2: Chạy installer. Bước 3: Cấu hình IP. (Đoạn này hướng dẫn các bước cài đặt cơ bản)\",
+      \"keywords\": [\"cài đặt\", \"hướng dẫn\", \"installer\", \"IP\"]
+    }}
   ]
-}
-```
-
-### Yêu cầu chi tiết cho từng trường:
-- **content**:
-  - Bắt đầu bằng title tổng (thường ở dòng đầu tiên của chunk đầu tiên).
-  - Giữ nguyên heading (1, 2, 3...) tương ứng.
-  - Bao gồm toàn bộ đoạn văn bản thuộc chunk.
-  - Cuối mỗi chunk, thêm một đoạn context ngắn gọn, tóm tắt nội dung hoặc ngữ cảnh của đoạn đó trong toàn bộ tài liệu (Bắt đầu bằng: Đoạn này .....).
-  - → Mục tiêu: cải thiện khả năng tìm kiếm và gợi nhớ nội dung.
-- **keywords**:
-  - Trích xuất 5–10 từ khóa quan trọng nhất của chunk (tùy theo độ dài).
-  - Từ khóa nên phản ánh chủ đề chính, khái niệm trọng tâm, hoặc thuật ngữ đặc trưng của đoạn văn.
-  - Viết thường, không trùng lặp.
-
-### Lưu ý:
-- Không thêm bất kỳ văn bản, ký tự, hay bình luận nào ngoài định dạng JSON trên.
-- Không dịch, không diễn giải lại nội dung.
-- Đảm bảo từng chunk độc lập và có ngữ cảnh riêng.
+}}
 
 Văn bản cần chunk:
-{text}"""
+<text>
+{text}
+</text>\"\"\"
 
-LLM_SUMMARY_PROMPT = """# Role:
-Bạn là một chuyên gia phân tích tài liệu cấp cao.
+LLM_SUMMARY_PROMPT = \"\"\"Bạn là một chuyên gia phân tích tài liệu cấp cao.
 
 ### Nhiệm vụ:
-Hãy tạo một bản tóm tắt cô đọng và toàn diện cho tài liệu dưới đây. Bản tóm tắt này sẽ được dùng làm "ngữ cảnh toàn cục" (global context) để hỗ trợ hệ thống Vector Search tìm kiếm chính xác hơn.
+Hãy tạo một bản tóm tắt cô đọng và toàn diện cho tài liệu dưới đây để làm ngữ cảnh toàn cục (global context).
 
-### Yêu cầu nội dung:
-1. **Mục đích chính**: Tài liệu này viết về cái gì? Giải quyết vấn đề gì?
-2. **Các thực thể chính**: Liệt kê các khái niệm, thuật ngữ, sản phẩm hoặc quy trình then chốt xuất hiện trong tài liệu.
-3. **Cấu trúc logic**: Mô tả ngắn gọn luồng thông tin của tài liệu.
-4. **Phong cách**: Viết súc tích, khách quan, không dùng từ ngữ thừa.
-
-### Giới hạn:
-- Độ dài: 100-200 từ.
-- Ngôn ngữ: Tiếng Việt.
-- Không chào hỏi, không giải thích, chỉ trả về nội dung bản tóm tắt.
+### Yêu cầu:
+1. **Mục đích**: Tài liệu này viết về cái gì? Giải quyết vấn đề gì?
+2. **Thực thể**: Liệt kê các khái niệm, thuật ngữ, sản phẩm then chốt.
+3. **Cấu trúc**: Mô tả ngắn gọn luồng thông tin.
+4. **Phong cách**: Súc tích, khách quan, tiếng Việt, 100-200 từ.
+5. **Định dạng**: Không chào hỏi, không giải thích, chỉ trả về nội dung bản tóm tắt.
 
 Văn bản cần tóm tắt:
-{text}"""
+<text>
+{text}
+</text>\"\"\"
 
 # Batch embedding config
 BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "32"))
@@ -205,6 +176,8 @@ class MilvusClient:
             FieldSchema(name="source_title", dtype=DataType.VARCHAR, max_length=500),
             FieldSchema(name="heading", dtype=DataType.VARCHAR, max_length=1000),
             FieldSchema(name="global_context", dtype=DataType.VARCHAR, max_length=5000),
+            FieldSchema(name="parent_id", dtype=DataType.VARCHAR, max_length=64),
+            FieldSchema(name="chunk_type", dtype=DataType.VARCHAR, max_length=20),
         ]
         schema = CollectionSchema(fields, description="Confluence Knowledge Base")
         collection = Collection(name=self.collection_name, schema=schema)
@@ -232,6 +205,8 @@ class MilvusClient:
                 "source_title": c["source_title"],
                 "heading": c["heading"],
                 "global_context": c.get("global_context", ""),
+                "parent_id": c.get("parent_id", ""),
+                "chunk_type": c.get("chunk_type", "child"),
             }
             for c in batch
         ]
@@ -466,57 +441,115 @@ async def chunk_text(
     source_type: str = "page",
     use_llm: bool = True,
 ) -> List[Dict[str, Any]]:
-    if use_llm and OPENAI_API_KEY:
-        log.info("Using LLM Chunking for better context preservation...")
-        try:
-            chunker = LLMChunker(
-                openai_api_key=OPENAI_API_KEY,
-                openai_base_url=OPENAI_BASE_URL,
-                openai_model=OPENAI_MODEL,
-                prompt=LLM_CHUNKING_PROMPT,
-            )
-            splits = await chunker.chunk_text(text, global_summary=global_summary)
-            log.info(f"LLM chunking produced {len(splits)} chunks")
-        except Exception as e:
-            log.warning(f"LLM chunking failed: {e}, falling back to basic splitting")
-            splits = text.split("\n\n")
-    else:
-        splits = text.split("\n\n")
+    PARENT_CHUNK_SIZE = 4000  # Approximate size for parent chunks
     
-    chunks = []
-    for i, split_data in enumerate(splits):
-        if isinstance(split_data, dict):
-            content = split_data.get("content", "").strip()
-            keywords = split_data.get("keywords", [])
-        else:
-            content = split_data.strip()
-            keywords = []
-            
-        if not content:
-            continue
-            
-        uid = hashlib.sha1(
-            f"{unique_id}::{i}::{content[:80]}".encode()
-        ).hexdigest()[:16]
+    if not use_llm or not OPENAI_API_KEY:
+        # Fallback to simple splitting if LLM is disabled or key missing
+        splits = text.split("\n\n")
+        chunks = []
+        for i, split in enumerate(splits):
+            content = split.strip()
+            if not content: continue
+            uid = hashlib.sha1(f"{unique_id}::{i}::{content[:80]}".encode()).hexdigest()[:16]
+            chunks.append({
+                "id": uid,
+                "content": content,
+                "source_file": title if source_type == "attachment" else f"{space_key}/{title}.md",
+                "source_title": title,
+                "group": space_key,
+                "heading": "",
+                **DEFAULT_METADATA,
+                "keywords": [],
+                "global_context": global_summary,
+                "parent_id": "",
+                "chunk_type": "child"
+            })
+        return chunks
+
+    log.info("Implementing Hierarchical (Parent-Child) Chunking...")
+    try:
+        chunker = LLMChunker(
+            openai_api_key=OPENAI_API_KEY,
+            openai_base_url=OPENAI_BASE_URL,
+            openai_model=OPENAI_MODEL,
+            prompt=LLM_CHUNKING_PROMPT,
+        )
         
-        if source_type == "attachment":
-            source_file = title
-        else:
-            source_file = f"{space_key}/{title}.md"
+        # 1. Split into Parent Segments
+        parent_segments = [text[i:i + PARENT_CHUNK_SIZE] for i in range(0, len(text), PARENT_CHUNK_SIZE)]
+        all_final_chunks = []
         
-        chunk = {
-            "id": uid,
-            "content": content,
-            "source_file": source_file,
-            "source_title": title,
-            "group": space_key,
-            "heading": "",
-            **DEFAULT_METADATA,
-            "keywords": keywords if keywords else DEFAULT_METADATA.get("keywords", ""),
-            "global_context": global_summary
-        }
-        chunks.append(chunk)
-    return chunks
+        for i, p_text in enumerate(parent_segments):
+            # Create Parent Chunk
+            p_uid = hashlib.sha1(f"{unique_id}::parent::{i}".encode()).hexdigest()[:16]
+            parent_chunk = {
+                "id": p_uid,
+                "content": p_text,
+                "source_file": title if source_type == "attachment" else f"{space_key}/{title}.md",
+                "source_title": title,
+                "group": space_key,
+                "heading": "",
+                **DEFAULT_METADATA,
+                "keywords": [],
+                "global_context": global_summary,
+                "parent_id": "",
+                "chunk_type": "parent"
+            }
+            all_final_chunks.append(parent_chunk)
+            
+            # 2. Generate Child Chunks from this Parent
+            child_splits = await chunker.chunk_text(p_text, global_summary=global_summary)
+            
+            for j, c_data in enumerate(child_splits):
+                if isinstance(c_data, dict):
+                    content = c_data.get("content", "").strip()
+                    keywords = c_data.get("keywords", [])
+                else:
+                    content = str(c_data).strip()
+                    keywords = []
+                
+                if not content: continue
+                
+                c_uid = hashlib.sha1(f"{p_uid}::child::{j}::{content[:80]}".encode()).hexdigest()[:16]
+                all_final_chunks.append({
+                    "id": c_uid,
+                    "content": content,
+                    "source_file": parent_chunk["source_file"],
+                    "source_title": title,
+                    "group": space_key,
+                    "heading": "",
+                    **DEFAULT_METADATA,
+                    "keywords": keywords if keywords else DEFAULT_METADATA.get("keywords", ""),
+                    "global_context": global_summary,
+                    "parent_id": p_uid,
+                    "chunk_type": "child"
+                })
+                
+        log.info(f"Hierarchical chunking produced {len(all_final_chunks)} total chunks (parents + children)")
+        return all_final_chunks
+
+    except Exception as e:
+        log.warning(f"Hierarchical chunking failed: {e}, falling back to basic splitting")
+        splits = text.split("\n\n")
+        chunks = []
+        for i, split in enumerate(splits):
+            content = split.strip()
+            if not content: continue
+            uid = hashlib.sha1(f"{unique_id}::{i}::{content[:80]}".encode()).hexdigest()[:16]
+            chunks.append({
+                "id": uid,
+                "content": content,
+                "source_file": title if source_type == "attachment" else f"{space_key}/{title}.md",
+                "source_title": title,
+                "group": space_key,
+                "heading": "",
+                **DEFAULT_METADATA,
+                "keywords": [],
+                "global_context": global_summary,
+                "parent_id": "",
+                "chunk_type": "child"
+            })
+        return chunks
 
 async def sync_single_space(c_client, m_client, e_client, s_key, sem, state_manager, stats):
     try:
