@@ -40,6 +40,8 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
+LLM_SEMAPHORE = asyncio.Semaphore(5)
+
 # LLM Chunking Prompt
 LLM_CHUNKING_PROMPT = \"\"\"Bạn là một hệ thống chunking văn bản thông minh chuyên dụng cho RAG.
 
