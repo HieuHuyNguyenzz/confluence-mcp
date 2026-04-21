@@ -384,51 +384,49 @@ class LLMChunker:
 
     async def chunk_text(self, text: str, global_summary: str = "") -> List[Dict[str, Any]]:
         initial_splits = self._split_for_llm(text)
-        all_chunks = []
         
-        for i, segment in enumerate(initial_splits):
+        async def process_segment(i, segment):
             prompt_with_text = self.prompt.replace("{text}", segment)
-            
-            try:
-                response = await self.llm.ainvoke(prompt_with_text)
-                content = response.content
-                
-                data = self._parse_json_response(content)
-                
-                if data is not None:
-                    if isinstance(data, dict) and "chunks" in data:
-                        chunks = data["chunks"]
-                        if isinstance(chunks, list):
-                            for c in chunks:
+            async with LLM_SEMAPHORE:
+                try:
+                    response = await self.llm.ainvoke(prompt_with_text)
+                    content = response.content
+                    data = self._parse_json_response(content)
+                    if data is not None:
+                        if isinstance(data, dict) and "chunks" in data:
+                            chunks = data["chunks"]
+                            if isinstance(chunks, list):
+                                processed = []
+                                for c in chunks:
+                                    if isinstance(c, dict):
+                                        original_content = c.get("content", "")
+                                        c["content"] = f"--- GLOBAL CONTEXT ---\n{global_summary}\n\n--- CONTENT ---\n{original_content}"
+                                        processed.append(c)
+                                    else:
+                                        processed.append({"content": segment, "keywords": []})
+                                return processed
+                        elif isinstance(data, list):
+                            processed = []
+                            for c in data:
                                 if isinstance(c, dict):
-                                    # Enrich the content with global summary
                                     original_content = c.get("content", "")
                                     c["content"] = f"--- GLOBAL CONTEXT ---\n{global_summary}\n\n--- CONTENT ---\n{original_content}"
-                                    all_chunks.append(c)
+                                    processed.append(c)
                                 else:
-                                    all_chunks.append({"content": segment, "keywords": []})
-                        else:
-                            all_chunks.append({"content": segment, "keywords": []})
-                    elif isinstance(data, list):
-                        for c in data:
-                            if isinstance(c, dict):
-                                original_content = c.get("content", "")
-                                c["content"] = f"--- GLOBAL CONTEXT ---\n{global_summary}\n\n--- CONTENT ---\n{original_content}"
-                                all_chunks.append(c)
-                            else:
-                                all_chunks.append({"content": segment, "keywords": []})
-                    else:
-                        all_chunks.append({"content": segment, "keywords": []})
-                else:
+                                    processed.append({"content": segment, "keywords": []})
+                            return processed
                     log.warning(f"LLM returned non-JSON content for segment {i}. Content: {content[:200]}...")
-                    all_chunks.append({"content": segment, "keywords": []})
-                        
-            except Exception as e:
-                log.warning(f"LLM chunking failed for segment {i}: {e}")
-                all_chunks.append({"content": segment, "keywords": []})
-            
-            await asyncio.sleep(0.2)
+                    return [{"content": segment, "keywords": []}]
+                except Exception as e:
+                    log.warning(f"LLM chunking failed for segment {i}: {e}")
+                    return [{"content": segment, "keywords": []}]
+
+        tasks = [process_segment(i, segment) for i, segment in enumerate(initial_splits)]
+        results = await asyncio.gather(*tasks)
         
+        all_chunks = []
+        for res in results:
+            all_chunks.extend(res)
         return all_chunks
 
 
@@ -441,7 +439,7 @@ async def chunk_text(
     source_type: str = "page",
     use_llm: bool = True,
 ) -> List[Dict[str, Any]]:
-    PARENT_CHUNK_SIZE = 4000  # Approximate size for parent chunks
+    PARENT_CHUNK_SIZE = 2000  # Reduced to avoid 504 Gateway Timeout
     
     if not use_llm or not OPENAI_API_KEY:
         # Fallback to simple splitting if LLM is disabled or key missing
@@ -551,13 +549,58 @@ async def chunk_text(
             })
         return chunks
 
+async def process_page_attachments(p, c_client, m_client, e_client, s_key, sem, chunker, stats):
+    """Helper to process all attachments of a page concurrently."""
+    p_id = p.get("id")
+    attachments = await c_client.get_all_attachments_paginated(p_id)
+    if not attachments:
+        return
+        
+    page_title = p.get("title", "Untitled")
+    log.info(f"Processing {len(attachments)} attachments for page {page_title}...")
+    
+    async def process_att(att):
+        att_filename = att.get("title", "")
+        att_download_path = att.get("_links", {}).get("download")
+        if not att_filename or not att_download_path:
+            return
+            
+        async with sem:
+            try:
+                att_bytes = await c_client.download_attachment(att_download_path)
+                from confluence_mcp.extractor import FileExtractor
+                att_text = FileExtractor.extract(att_filename, att_bytes)
+                if not att_text or len(att_text.strip()) < 10:
+                    return
+                
+                global_summary = await chunker.generate_document_summary(att_text)
+                att_chunks = await chunk_text(
+                    att_text,
+                    f"{p_id}_{att_filename}",
+                    att_filename,
+                    s_key,
+                    global_summary=global_summary,
+                    source_type="attachment"
+                )
+                if att_chunks:
+                    embedded_att_chunks = await e_client.embed_chunks(att_chunks)
+                    if embedded_att_chunks:
+                        for i in range(0, len(embedded_att_chunks), 100):
+                            batch = embedded_att_chunks[i:i + 100]
+                            m_client.upload_batch(batch)
+                        stats["chunks"] += len(embedded_att_chunks)
+                        log.info(f"Synced attachment: {att_filename}")
+            except Exception as att_e:
+                log.warning(f"Failed to sync attachment {att_filename}: {att_e}")
+
+    await asyncio.gather(*[process_att(att) for att in attachments])
+
 async def sync_single_space(c_client, m_client, e_client, s_key, sem, state_manager, stats):
     try:
         log.info(f"--- Syncing attachments in space: {s_key} ---")
         pages = await c_client.get_all_pages_paginated(s_key)
         log.info(f"Found {len(pages)} pages in {s_key} to check for attachments.")
         
-        # Initialize LLMChunker once per space
         chunker = LLMChunker(
             openai_api_key=OPENAI_API_KEY,
             openai_base_url=OPENAI_BASE_URL,
@@ -565,68 +608,27 @@ async def sync_single_space(c_client, m_client, e_client, s_key, sem, state_mana
             prompt=LLM_CHUNKING_PROMPT,
         )
         
-        for p in pages:
-            p_id = p.get("id")
-            if state_manager.is_synced(p_id):
-                log.debug(f"Skipping already synced page attachments: {p_id}")
-                continue
-                
-            # Process attachments for this page
-            attachments = await c_client.get_all_attachments_paginated(p_id)
-            if attachments:
-                page_title = p.get("title", "Untitled")
-                log.info(f"Processing {len(attachments)} attachments for page {page_title}...")
-                
-                for att in attachments:
-                    att_filename = att.get("title", "")
-                    att_download_path = att.get("_links", {}).get("download")
-                    
-                    if not att_filename or not att_download_path:
-                        continue
-                    
-                    async with sem:
-                        try:
-                            # 1. Download attachment
-                            att_bytes = await c_client.download_attachment(att_download_path)
-                            
-                            # 2. Extract text to Markdown
-                            from confluence_mcp.extractor import FileExtractor
-                            att_text = FileExtractor.extract(att_filename, att_bytes)
-                            
-                            if not att_text or len(att_text.strip()) < 10:
-                                continue
-                            
-                            # 3. Generate Global Summary for the attachment
-                            global_summary = await chunker.generate_document_summary(att_text)
-                            
-                            # 4. Process attachment content: Chunk -> Embed -> Save
-                            att_chunks = await chunk_text(
-                                att_text,
-                                f"{p_id}_{att_filename}",
-                                att_filename,
-                                s_key,
-                                global_summary=global_summary,
-                                source_type="attachment"
-                            )
-                            
-                            if att_chunks:
-                                embedded_att_chunks = await e_client.embed_chunks(att_chunks)
-                                if embedded_att_chunks:
-                                    for i in range(0, len(embedded_att_chunks), 100):
-                                        batch = embedded_att_chunks[i:i + 100]
-                                        m_client.upload_batch(batch)
-                                    stats["chunks"] += len(embedded_att_chunks)
-                                    log.info(f"Synced attachment: {att_filename}")
-                                    
-                        except Exception as att_e:
-                            log.warning(f"Failed to sync attachment {att_filename}: {att_e}")
+        # Process pages concurrently in batches to avoid overwhelming the system
+        batch_size = 5
+        for i in range(0, len(pages), batch_size):
+            batch = pages[i : i + batch_size]
+            tasks = []
+            for p in batch:
+                p_id = p.get("id")
+                if not state_manager.is_synced(p_id):
+                    tasks.append(process_page_attachments(p, c_client, m_client, e_client, s_key, sem, chunker, stats))
             
-            state_manager.mark_synced(p_id)
-            stats["success"] += 1
+            if tasks:
+                await asyncio.gather(*tasks)
+                # Mark all pages in this batch as synced
+                for p in batch:
+                    state_manager.mark_synced(p.get("id"))
+                    stats["success"] += 1
             
         log.info(f"Completed sync for space: {s_key}")
     except Exception as e:
         log.error(f"Critical error syncing space {s_key}: {e}")
+
 
 async def main():
     c_url = os.getenv("CONFLUENCE_URL")
