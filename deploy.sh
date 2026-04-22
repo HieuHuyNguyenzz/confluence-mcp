@@ -3,10 +3,12 @@
 # Configuration
 IMAGE_NAME="bitu-confluence-mcp:v1"
 CONTAINER_NAME="bitu-confluence-mcp"
-# Proxy for build-time dependency installation
-HTTP_PROXY="http://10.255.249.100:3128"
-HTTPS_PROXY="http://10.255.249.100:3128"
-NO_PROXY="localhost,127.0.0.1,.viettelcyber.com"
+
+# Proxy for build-time dependency installation (Allow override via env vars)
+HTTP_PROXY="${HTTP_PROXY:-http://10.255.249.100:3128}"
+HTTPS_PROXY="${HTTPS_PROXY:-http://10.255.249.100:3128}"
+NO_PROXY="${NO_PROXY:-localhost,127.0.0.1,.viettelcyber.com}"
+
 # Using values from the working reference MCP
 CONFLUENCE_HOST="confluence.viettelcyber.com"
 CONFLUENCE_IP="10.255.244.100"

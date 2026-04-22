@@ -42,18 +42,24 @@ class ConfluenceClient:
         if self._client and not self._client.is_closed:
             await self._client.aclose()
 
-    async def _get(self, path: str, params: dict[str, Any] | None = None) -> dict:
-        client = await self._get_client()
-        try:
-            resp = await client.get(path, params=params)
-            resp.raise_for_status()
-            return resp.json()
-        except httpx.HTTPStatusError as e:
-            print(f"HTTP error occurred: {e.response.status_code} - {e.response.text}")
-            raise
-        except Exception as e:
-            print(f"Unexpected error during request to {path}: {type(e).__name__}: {str(e)}")
-            raise
+    async def _paginate(self, path: str, params: dict[str, Any], batch_size: int) -> list[dict[str, Any]]:
+        """Generic pagination helper for Confluence API."""
+        all_results: list[dict[str, Any]] = []
+        start = 0
+        while True:
+            params["limit"] = batch_size
+            params["start"] = start
+            result = await self._get(path, params=params)
+            results = result.get("results", [])
+            all_results.extend(results)
+
+            size = result.get("size", 0)
+            total = result.get("totalSize", 0)
+
+            if start + size >= total:
+                break
+            start += size
+        return all_results
 
     async def list_spaces(self, limit: int = 25, start: int = 0) -> list[dict[str, Any]]:
         """List all Confluence spaces accessible to the user."""
@@ -62,7 +68,6 @@ class ConfluenceClient:
             params={"limit": limit, "start": start, "expand": "description,metadata"},
         )
         return result.get("results", [])
-
 
     async def get_all_pages_in_space(
         self,
@@ -79,7 +84,6 @@ class ConfluenceClient:
                 "limit": limit,
                 "start": start,
                 "expand": "ancestors,version",
-
             },
         )
 
@@ -98,26 +102,11 @@ class ConfluenceClient:
         self, space_key: str, batch_size: int = 100
     ) -> list[dict[str, Any]]:
         """Fetch ALL pages in a space with automatic pagination."""
-        all_pages: list[dict[str, Any]] = []
-        start = 0
-
-        while True:
-            result = await self.get_all_pages_in_space(
-                space_key=space_key,
-                limit=batch_size,
-                start=start,
-            )
-            results = result.get("results", [])
-            all_pages.extend(results)
-
-            size = result.get("size", 0)
-            total = result.get("totalSize", 0)
-
-            if start + size >= total:
-                break
-            start += size
-
-        return all_pages
+        return await self._paginate(
+            "/rest/api/content/search",
+            params={"cql": f"space={space_key} AND type=page", "expand": "ancestors,version"},
+            batch_size=batch_size,
+        )
 
     async def download_attachment(
         self, download_path: str, retries: int = 3, save_path: str | None = None
@@ -160,23 +149,9 @@ class ConfluenceClient:
         self, page_id: str, batch_size: int = 100
     ) -> list[dict[str, Any]]:
         """Fetch ALL attachments for a page with automatic pagination."""
-        all_attachments: list[dict[str, Any]] = []
-        start = 0
+        return await self._paginate(
+            f"/rest/api/content/{page_id}/child/attachment",
+            params={},
+            batch_size=batch_size,
+        )
 
-        while True:
-            result = await self.get_page_attachments(
-                page_id=page_id,
-                limit=batch_size,
-                start=start,
-            )
-            results = result.get("results", [])
-            all_attachments.extend(results)
-
-            size = result.get("size", 0)
-            total = result.get("totalSize", 0)
-
-            if start + size >= total:
-                break
-            start += size
-
-        return all_attachments

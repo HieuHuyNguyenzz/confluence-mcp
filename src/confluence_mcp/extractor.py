@@ -391,24 +391,26 @@ def _extract_7z(data: bytes) -> str:
         return f"[Error extracting 7z: {e}]"
 
 
-def _extract_xmind(data: bytes) -> str:
-    """Extract content from XMind files as Markdown."""
-    try:
-        from xmindparser import xmind_to_dict
+    def _extract_xmind(data: bytes) -> str:
+        """Extract content from XMind files as Markdown."""
+        try:
+            from xmindparser import xmind_to_dict
+            import tempfile
+            import os
+    
+            with tempfile.NamedTemporaryFile(suffix=".xmind", delete=False) as tmp:
+                tmp.write(data)
+                tmp_path = tmp.name
+    
+            result = xmind_to_dict(tmp_path)
+            os.remove(tmp_path)
+    
+            return _format_xmind_to_markdown(result)
+        except ImportError:
+            return "[Error: 'xmindparser' library not installed. Please install it to extract XMind files.]"
+        except Exception as e:
+            return f"[Error extracting XMind: {type(e).__name__}: {e}]"
 
-        with open("/tmp/temp_xmind.xmind", "wb") as f:
-            f.write(data)
-
-        result = xmind_to_dict("/tmp/temp_xmind.xmind")
-        
-        import os
-        os.remove("/tmp/temp_xmind.xmind")
-
-        return _format_xmind_to_markdown(result)
-    except ImportError:
-        return "[Error: 'xmindparser' library not installed. Please install it to extract XMind files.]"
-    except Exception as e:
-        return f"[Error extracting XMind: {type(e).__name__}: {e}]"
 
 
 def _format_xmind_to_markdown(xmind_data: dict) -> str:
@@ -523,11 +525,14 @@ def _extract_msg(data: bytes) -> str:
     """Extract content from Outlook .msg files as Markdown."""
     try:
         from extract_msg import Message
-
-        with open("/tmp/temp_msg.msg", "wb") as f:
-            f.write(data)
-
-        msg = Message("/tmp/temp_msg.msg")
+        import tempfile
+        import os
+    
+        with tempfile.NamedTemporaryFile(suffix=".msg", delete=False) as tmp:
+            tmp.write(data)
+            tmp_path = tmp.name
+    
+        msg = Message(tmp_path)
         
         parts = []
         
@@ -576,12 +581,11 @@ def _extract_msg(data: bytes) -> str:
                 parts.append(f"- {att_name}")
         
         msg.close()
-        
-        import os
-        os.remove("/tmp/temp_msg.msg")
+        os.remove(tmp_path)
         
         return "\n".join(parts)
     except ImportError:
         return "[Error: 'extract-msg' library not installed. Please install it to extract MSG files.]"
     except Exception as e:
         return f"[Error extracting MSG: {type(e).__name__}: {e}]"
+
