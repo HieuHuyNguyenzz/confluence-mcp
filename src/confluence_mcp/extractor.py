@@ -402,25 +402,25 @@ def _extract_7z(data: bytes) -> str:
         return f"[Error extracting 7z: {e}]"
 
 
-    def _extract_xmind(data: bytes) -> str:
-        """Extract content from XMind files as Markdown."""
-        try:
-            from xmindparser import xmind_to_dict
-            import tempfile
-            import os
-    
-            with tempfile.NamedTemporaryFile(suffix=".xmind", delete=False) as tmp:
-                tmp.write(data)
-                tmp_path = tmp.name
-    
-            result = xmind_to_dict(tmp_path)
-            os.remove(tmp_path)
-    
-            return _format_xmind_to_markdown(result)
-        except ImportError:
-            return "[Error: 'xmindparser' library not installed. Please install it to extract XMind files.]"
-        except Exception as e:
-            return f"[Error extracting XMind: {type(e).__name__}: {e}]"
+def _extract_xmind(data: bytes) -> str:
+    """Extract content from XMind files as Markdown."""
+    try:
+        from xmindparser import xmind_to_dict
+        import tempfile
+        import os
+
+        with tempfile.NamedTemporaryFile(suffix=".xmind", delete=False) as tmp:
+            tmp.write(data)
+            tmp_path = tmp.name
+
+        result = xmind_to_dict(tmp_path)
+        os.remove(tmp_path)
+
+        return _format_xmind_to_markdown(result)
+    except ImportError:
+        return "[Error: 'xmindparser' library not installed. Please install it to extract XMind files.]"
+    except Exception as e:
+        return f"[Error extracting XMind: {type(e).__name__}: {e}]"
 
 
 
