@@ -9,7 +9,7 @@ from langchain_openai import ChatOpenAI
 
 log = logging.getLogger(__name__)
 
-LLM_CHUNKING_PROMPT = \"\"\"Bạn là một hệ thống chunking văn bản thông minh chuyên dụng cho RAG.
+LLM_CHUNKING_PROMPT = """Bạn là một hệ thống chunking văn bản thông minh chuyên dụng cho RAG.
 
 ### Nhiệm vụ:
 Nhận đầu vào là một văn bản và chia nó thành các đoạn (chunks) nhỏ sao cho mỗi chunk giữ được ý nghĩa trọn vẹn và có ngữ cảnh rõ ràng.
@@ -25,7 +25,8 @@ Nhận đầu vào là một văn bản và chia nó thành các đoạn (chunks
    - Cuối mỗi chunk, thêm một câu tóm tắt ngữ cảnh ngắn (Bắt đầu bằng: "Đoạn này...").
 
 ### 🧩 Định dạng đầu ra (JSON):
-Bạn PHẢI trả về kết quả dưới định dạng JSON thuần túy, bắt đầu bằng `{` và kết thúc bằng `}`. Không thêm lời dẫn hoặc markdown block.
+Bạn PHẢI trả về kết quả dưới định dạng JSON thuần túy. Đảm bảo các chuỗi tiếng Việt được mã hóa đúng chuẩn UTF-8 và không bị ngắt quãng sai. 
+Kết quả phải bắt đầu bằng `{` và kết thúc bằng `}`. Không thêm lời dẫn, không sử dụng markdown block (```json).
 
 Ví dụ:
 Input: \"# Hướng dẫn cài đặt\\nBước 1: Tải file. Bước 2: Chạy installer. Bước 3: Cấu hình IP.\"
@@ -42,9 +43,9 @@ Output:
 Văn bản cần chunk:
 <text>
 {text}
-</text>\"\"\"
+</text>"""
 
-LLM_SUMMARY_PROMPT = \"\"\"Bạn là một chuyên gia phân tích tài liệu cấp cao.
+LLM_SUMMARY_PROMPT = """Bạn là một chuyên gia phân tích tài liệu cấp cao.
 
 ### Nhiệm vụ:
 Hãy tạo một bản tóm tắt cô đọng và toàn diện cho tài liệu dưới đây để làm ngữ cảnh toàn cục (global context).
@@ -59,7 +60,7 @@ Hãy tạo một bản tóm tắt cô đọng và toàn diện cho tài liệu d
 Văn bản cần tóm tắt:
 <text>
 {text}
-</text>\"\"\"
+</text>"""
 
 class LLMChunker:
     def __init__(
@@ -100,8 +101,9 @@ class LLMChunker:
             return ""
 
     def _parse_json_response(self, content: str) -> Any:
-        """Robustly extract JSON from LLM response."""
-        content = re.sub(r'```json\s*', '', content)
+        """Robustly extract JSON from LLM response, handling common issues with Vietnamese content."""
+        # Remove markdown code blocks if present
+        content = re.sub(r'```json\s*', '', content, flags=re.IGNORECASE)
         content = re.sub(r'```\s*$', '', content)
         content = content.strip()
         
@@ -110,11 +112,16 @@ class LLMChunker:
         except json.JSONDecodeError:
             pass
             
+        # Try to find the first { and last }
         try:
             start = content.find('{')
             end = content.rfind('}')
             if start != -1 and end != -1 and end > start:
-                return json.loads(content[start:end+1])
+                # Attempt to fix common trailing commas or broken JSON structures
+                json_str = content[start:end+1]
+                # Remove trailing commas before closing brackets/braces
+                json_str = re.sub(r',\s*([\]}])', r'\1', json_str)
+                return json.loads(json_str)
         except json.JSONDecodeError:
             pass
             
@@ -164,9 +171,9 @@ class LLMChunker:
                             return processed
                     log.warning(f"LLM returned non-JSON content for segment {i}. Content: {content[:200]}...")
                     return [{"content": segment, "keywords": []}]
-                except Exception as e:
-                    log.warning(f"LLM chunking failed for segment {i}: {e}")
-                    return [{"content": segment, "keywords": []}]
+            except Exception as e:
+                log.warning(f"LLM chunking failed for segment {i}: {e}")
+                return [{"content": segment, "keywords": []}]
         
         tasks = [process_segment(i, segment) for i, segment in enumerate(initial_splits)]
         results = await asyncio.gather(*tasks)

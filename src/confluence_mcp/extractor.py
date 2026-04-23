@@ -79,6 +79,17 @@ class FileExtractor:
         return f"[Unsupported file type: .{ext} ({_guess_media_type(ext)})]"
 
 
+def _decode_bytes(data: bytes) -> str:
+    """Try multiple encodings to decode bytes to string, focusing on Vietnamese."""
+    encodings = ["utf-8-sig", "utf-8", "cp1258", "iso-8859-1"]
+    for enc in encodings:
+        try:
+            return data.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("utf-8", errors="replace")
+
+
 def _extract_pdf(data: bytes) -> str:
     """Extract text from PDF files."""
     from pypdf import PdfReader
@@ -127,7 +138,7 @@ def _extract_docx(data: bytes) -> str:
 def _extract_doc(data: bytes) -> str:
     """Legacy .doc files - best effort text extraction."""
     try:
-        text = data.decode("utf-8", errors="replace")
+        text = _decode_bytes(data)
         return text.strip()
     except Exception:
         return "[Cannot extract .doc file - convert to .docx for better support]"
@@ -172,7 +183,7 @@ def _extract_xls(data: bytes) -> str:
 
 def _extract_csv(data: bytes) -> str:
     """Extract content from CSV files as Markdown tables."""
-    text = data.decode("utf-8", errors="replace")
+    text = _decode_bytes(data)
 
     sniffer = csv.Sniffer()
     try:
@@ -243,12 +254,12 @@ def _extract_ppt(data: bytes) -> str:
 
 def _extract_text(data: bytes) -> str:
     """Return plain text content."""
-    return data.decode("utf-8", errors="replace").strip()
+    return _decode_bytes(data).strip()
 
 
 def _extract_json(data: bytes) -> str:
     """Parse and reformat JSON as readable text."""
-    text = data.decode("utf-8", errors="replace")
+    text = _decode_bytes(data)
     try:
         parsed = json.loads(text)
         return json.dumps(parsed, indent=2, ensure_ascii=False)
@@ -260,7 +271,7 @@ def _extract_xml(data: bytes) -> str:
     """Parse and format XML."""
     from xml.dom import minidom
 
-    text = data.decode("utf-8", errors="replace")
+    text = _decode_bytes(data)
     try:
         dom = minidom.parseString(text)
         return dom.toprettyxml(indent="  ")
@@ -270,7 +281,7 @@ def _extract_xml(data: bytes) -> str:
 
 def _extract_html(data: bytes) -> str:
     """Convert HTML to Markdown."""
-    text = data.decode("utf-8", errors="replace")
+    text = _decode_bytes(data)
     soup = BeautifulSoup(text, "html.parser")
     return md(str(soup), heading_style="ATX", bullets="-").strip()
 
@@ -465,7 +476,7 @@ def _format_xmind_to_markdown(xmind_data: dict) -> str:
 def _extract_drawio(data: bytes) -> str:
     """Extract content from drawio XML files as Markdown."""
     try:
-        text = data.decode("utf-8", errors="replace")
+        text = _decode_bytes(data)
         soup = BeautifulSoup(text, "xml")
         
         parts = []
