@@ -82,7 +82,9 @@ class LLMChunker:
 
     async def generate_document_summary(self, text: str) -> str:
         """Generate a global summary for the entire document to be used as context for chunks."""
-        limit = 100000 
+        # Reduced limit to avoid exceeding model's context window (e.g., 65k tokens).
+        # 30k characters is generally safe for most LLMs to avoid max_tokens issues.
+        limit = 30000 
         if len(text) > limit:
             log.info(f"Document too large ({len(text)} chars), summarizing in parts...")
             mid = len(text) // 2
