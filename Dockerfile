@@ -10,6 +10,9 @@ ENV http_proxy=$HTTP_PROXY
 ENV https_proxy=$HTTPS_PROXY
 ENV no_proxy=$NO_PROXY
 
+# Install system dependencies for .doc extraction
+RUN apt-get update && apt-get install -y --no-install-recommends antiword && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Copy project files first

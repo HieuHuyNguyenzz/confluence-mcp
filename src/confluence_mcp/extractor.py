@@ -5,6 +5,9 @@ import io
 import json
 import zipfile
 import tarfile
+import subprocess
+import tempfile
+import os
 from typing import Any
 
 from bs4 import BeautifulSoup
@@ -136,12 +139,26 @@ def _extract_docx(data: bytes) -> str:
 
 
 def _extract_doc(data: bytes) -> str:
-    """Legacy .doc files - best effort text extraction."""
+    """Extract content from .doc files using antiword."""
     try:
-        text = _decode_bytes(data)
-        return text.strip()
-    except Exception:
-        return "[Cannot extract .doc file - convert to .docx for better support]"
+        with tempfile.NamedTemporaryFile(suffix=".doc", delete=False) as tmp:
+            tmp.write(data)
+            tmp_path = tmp.name
+        
+        result = subprocess.run(
+            ["antiword", tmp_path],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace"
+        )
+        os.remove(tmp_path)
+        
+        if result.returncode == 0:
+            return result.stdout.strip()
+        return f"[Antiword error: {result.stderr}]"
+    except Exception as e:
+        return f"[Error extracting .doc file: {type(e).__name__}: {e}]"
 
 
 def _extract_xlsx(data: bytes) -> str:
