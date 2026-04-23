@@ -1,6 +1,7 @@
 """Confluence Server/Data Center REST API client."""
 
 import base64
+import asyncio
 from typing import Any
 
 import httpx
@@ -37,6 +38,13 @@ class ConfluenceClient:
                 timeout=httpx.Timeout(300.0, connect=20.0),
             )
         return self._client
+
+    async def _get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Helper method to perform GET requests and return JSON."""
+        client = await self._get_client()
+        resp = await client.get(path, params=params)
+        resp.raise_for_status()
+        return resp.json()
 
     async def close(self):
         if self._client and not self._client.is_closed:
