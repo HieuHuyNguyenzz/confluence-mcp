@@ -10,3 +10,4 @@ build/
 output/
 downloads/
 .DS_Store
+opencode.jsonc
